@@ -1,0 +1,39 @@
+meta {
+  name: Initiate Payment
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/payments/initiate
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "booking_id": 1,
+    "payment_method": "wave",
+    "phone": "+2250123456789"
+  }
+}
+
+docs {
+  # Initiate Payment
+  
+  Initie un paiement pour une réservation.
+  Nécessite un token JWT valide.
+  
+  Méthodes de paiement disponibles:
+  - wave
+  - orange_money
+  - mtn_momo
+  
+  Remplacez `booking_id` par l'ID d'une réservation en attente.
+}
+

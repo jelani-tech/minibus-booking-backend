@@ -1,0 +1,34 @@
+meta {
+  name: Payment Webhook
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/payments/webhook
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "transaction_id": "MB123456",
+    "status": "completed"
+  }
+}
+
+docs {
+  # Payment Webhook
+  
+  Endpoint webhook pour recevoir les notifications de paiement des providers.
+  Ne nécessite pas d'authentification (à sécuriser en production).
+  
+  Statuts possibles:
+  - completed, success, paid: Paiement réussi
+  - failed, cancelled, error: Paiement échoué
+}
+

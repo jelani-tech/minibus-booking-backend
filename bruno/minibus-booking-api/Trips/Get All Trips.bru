@@ -1,0 +1,32 @@
+meta {
+  name: Get All Trips
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/trips
+  body: none
+  auth: none
+}
+
+params:query {
+  departure_city: Abidjan
+  arrival_city: Yamoussoukro
+  date: 2024-12-20
+}
+
+headers {
+  Content-Type: application/json
+}
+
+docs {
+  # Get All Trips
+  
+  Récupère la liste de tous les trajets actifs.
+  Paramètres optionnels:
+  - departure_city: Ville de départ
+  - arrival_city: Ville d'arrivée
+  - date: Date au format YYYY-MM-DD
+}
+

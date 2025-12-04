@@ -1,0 +1,41 @@
+meta {
+  name: Create Trip
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/trips
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "departure_city": "Abidjan",
+    "arrival_city": "Yamoussoukro",
+    "departure_time": "2024-12-20T08:00:00Z",
+    "arrival_time": "2024-12-20T12:00:00Z",
+    "price": 5000,
+    "available_seats": 18,
+    "total_seats": 18,
+    "driver_name": "Kouassi Jean",
+    "driver_phone": "+2250123456789",
+    "vehicle_number": "AB-123-CD",
+    "status": "active"
+  }
+}
+
+docs {
+  # Create Trip
+  
+  Crée un nouveau trajet.
+  Nécessite un token JWT valide.
+  Les dates doivent être au format ISO 8601 (YYYY-MM-DDTHH:mm:ssZ).
+}
+

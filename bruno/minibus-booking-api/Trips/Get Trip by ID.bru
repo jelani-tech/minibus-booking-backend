@@ -1,0 +1,23 @@
+meta {
+  name: Get Trip by ID
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/trips/1
+  body: none
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+docs {
+  # Get Trip by ID
+  
+  Récupère les détails d'un trajet spécifique.
+  Remplacez `1` par l'ID du trajet souhaité.
+}
+

@@ -1,0 +1,26 @@
+meta {
+  name: Cancel Booking
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/api/bookings/1
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+docs {
+  # Cancel Booking
+  
+  Annule une réservation.
+  Nécessite un token JWT valide.
+  Remplacez `1` par l'ID de la réservation à annuler.
+  Les places seront automatiquement remises à disposition.
+}
+

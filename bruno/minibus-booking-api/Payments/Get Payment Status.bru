@@ -1,0 +1,25 @@
+meta {
+  name: Get Payment Status
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/payments/status/1
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+docs {
+  # Get Payment Status
+  
+  Récupère le statut du paiement pour une réservation.
+  Nécessite un token JWT valide.
+  Remplacez `1` par l'ID de la réservation.
+}
+

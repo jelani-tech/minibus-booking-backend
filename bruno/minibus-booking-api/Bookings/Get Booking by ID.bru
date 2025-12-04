@@ -1,0 +1,25 @@
+meta {
+  name: Get Booking by ID
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/bookings/1
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+docs {
+  # Get Booking by ID
+  
+  Récupère les détails d'une réservation spécifique.
+  Nécessite un token JWT valide.
+  Remplacez `1` par l'ID de la réservation souhaitée.
+}
+

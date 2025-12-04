@@ -1,0 +1,34 @@
+meta {
+  name: Create Booking
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/bookings
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "trip_id": 1,
+    "number_of_seats": 2,
+    "passenger_name": "Marie Kouassi",
+    "passenger_phone": "+2250123456789"
+  }
+}
+
+docs {
+  # Create Booking
+  
+  Crée une nouvelle réservation.
+  Nécessite un token JWT valide.
+  Remplacez `trip_id` par l'ID d'un trajet existant.
+}
+
