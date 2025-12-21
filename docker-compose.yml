@@ -15,11 +15,26 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d minibus_db"]
+      test: [ "CMD-SHELL", "pg_isready -U user -d minibus_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  backend:
+    build: .
+    container_name: minibus_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/minibus_db
+      - FLASK_APP=app.py
+      - FLASK_DEBUG=1
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+
 
