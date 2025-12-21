@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from models import db, Payment, Booking
+from models.public import db, Payment, Booking
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from services.wave_payment import WavePaymentService
 from services.orange_money import OrangeMoneyService
