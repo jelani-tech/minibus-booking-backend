@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from models import db, Trip
+from models.public import db, Trip
 from flask_jwt_extended import jwt_required
 from datetime import datetime
 

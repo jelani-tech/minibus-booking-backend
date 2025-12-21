@@ -31,7 +31,11 @@ class User(db.Model):
             'created_at': self.created_at.isoformat()
         }
 
+
 class Trip(db.Model):
+    """
+    TO BE DELETED
+    """
     __tablename__ = 'trips'
     
     id = db.Column(db.Integer, primary_key=True)
@@ -68,10 +72,13 @@ class Trip(db.Model):
         }
 
 class Booking(db.Model):
+    """
+    TO BE DELETED
+    """
     __tablename__ = 'bookings'
     
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    user_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('users.id'), nullable=False)
     trip_id = db.Column(db.Integer, db.ForeignKey('trips.id'), nullable=False)
     number_of_seats = db.Column(db.Integer, nullable=False, default=1)
     total_price = db.Column(db.Float, nullable=False)
@@ -97,6 +104,9 @@ class Booking(db.Model):
         }
 
 class Payment(db.Model):
+    """
+    TO BE DELETED
+    """
     __tablename__ = 'payments'
     
     id = db.Column(db.Integer, primary_key=True)

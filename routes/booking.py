@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from models import db, Booking, Trip
+from models.public import db, Booking, Trip
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 booking_bp = Blueprint('booking', __name__, url_prefix='/api/bookings')
