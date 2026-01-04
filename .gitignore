@@ -13,3 +13,4 @@ ENV/
 .DS_Store
 *.log
 
+.vscode/launch.json

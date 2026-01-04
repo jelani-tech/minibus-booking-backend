@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE clients.clients ( 
-    client_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), 
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), 
     created_at timestamptz DEFAULT now() NOT NULL, 
     updated_at timestamptz DEFAULT now() NOT NULL, 
     user_id UUID NOT NULL,
@@ -28,23 +28,23 @@ CREATE TABLE clients.clients (
 );
 
 CREATE TABLE clients.accounts (
-    account_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     client_id UUID NOT NULL,
     balance FLOAT NOT NULL DEFAULT 0.0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_client FOREIGN KEY (client_id) REFERENCES clients.clients(client_id) ON DELETE CASCADE
+    CONSTRAINT fk_client FOREIGN KEY (client_id) REFERENCES clients.clients(id) ON DELETE CASCADE
 );
 
 CREATE TABLE clients.trips (
-    trip_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     client_id UUID NOT NULL,
     step_number INT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_client_trip FOREIGN KEY (client_id) REFERENCES clients.clients(client_id) ON DELETE CASCADE
+    CONSTRAINT fk_client_trip FOREIGN KEY (client_id) REFERENCES clients.clients(id) ON DELETE CASCADE
 );
 
 CREATE TABLE clients.transactions (
-    transaction_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     client_id UUID NOT NULL,
     type clients.transaction_type NOT NULL,
     amount FLOAT NOT NULL,
@@ -52,25 +52,25 @@ CREATE TABLE clients.transactions (
     arrival TEXT,
     payment_method common.payment_method,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_client_transaction FOREIGN KEY (client_id) REFERENCES clients.clients(client_id) ON DELETE CASCADE
+    CONSTRAINT fk_client_transaction FOREIGN KEY (client_id) REFERENCES clients.clients(id) ON DELETE CASCADE
 );
 
 CREATE TABLE partners.partners (
-    partner_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE partners.accounts (
-    account_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     partner_id UUID NOT NULL,
     balance FLOAT NOT NULL DEFAULT 0.0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_partner FOREIGN KEY (partner_id) REFERENCES partners.partners(partner_id) ON DELETE CASCADE
+    CONSTRAINT fk_partner FOREIGN KEY (partner_id) REFERENCES partners.partners(id) ON DELETE CASCADE
 );
 
 CREATE TABLE partners.transactions (
-    transaction_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     partner_id UUID NOT NULL,
     type partners.transaction_type NOT NULL,
     amount FLOAT NOT NULL DEFAULT 0.0,
@@ -78,18 +78,18 @@ CREATE TABLE partners.transactions (
     arrival TEXT,
     payment_method common.payment_method,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_partner_transaction FOREIGN KEY (partner_id) REFERENCES partners.partners(partner_id) ON DELETE CASCADE
+    CONSTRAINT fk_partner_transaction FOREIGN KEY (partner_id) REFERENCES partners.partners(id) ON DELETE CASCADE
 );
 
 CREATE TABLE common.stations (
-    station_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE common.lines (
-    line_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     direction TEXT,
     stop_number INT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -97,7 +97,7 @@ CREATE TABLE common.lines (
 );
 
 CREATE TABLE common.stops (
-    stop_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     line_id UUID NOT NULL,
     station_id UUID NOT NULL,
     longitude DECIMAL(10, 7) NOT NULL,
@@ -105,12 +105,12 @@ CREATE TABLE common.stops (
     "order" INT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_line FOREIGN KEY (line_id) REFERENCES common.lines(line_id) ON DELETE CASCADE,
-    CONSTRAINT fk_station FOREIGN KEY (station_id) REFERENCES common.stations(station_id) ON DELETE CASCADE
+    CONSTRAINT fk_line FOREIGN KEY (line_id) REFERENCES common.lines(id) ON DELETE CASCADE,
+    CONSTRAINT fk_station FOREIGN KEY (station_id) REFERENCES common.stations(id) ON DELETE CASCADE
 );
 
 CREATE TABLE common.steps (
-    step_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     trip_id UUID NOT NULL,
     client_transaction_id UUID NOT NULL,
     partner_transaction_id UUID NOT NULL,
@@ -121,10 +121,10 @@ CREATE TABLE common.steps (
     arrival TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_trip FOREIGN KEY (trip_id) REFERENCES clients.trips(trip_id) ON DELETE CASCADE,
-    CONSTRAINT fk_client_trans FOREIGN KEY (client_transaction_id) REFERENCES clients.transactions(transaction_id) ON DELETE CASCADE,
-    CONSTRAINT fk_partner_trans FOREIGN KEY (partner_transaction_id) REFERENCES partners.transactions(transaction_id) ON DELETE CASCADE,
-    CONSTRAINT fk_partner FOREIGN KEY (partner_id) REFERENCES partners.partners(partner_id) ON DELETE SET NULL
+    CONSTRAINT fk_trip FOREIGN KEY (trip_id) REFERENCES clients.trips(id) ON DELETE CASCADE,
+    CONSTRAINT fk_client_trans FOREIGN KEY (client_transaction_id) REFERENCES clients.transactions(id) ON DELETE CASCADE,
+    CONSTRAINT fk_partner_trans FOREIGN KEY (partner_transaction_id) REFERENCES partners.transactions(id) ON DELETE CASCADE,
+    CONSTRAINT fk_partner FOREIGN KEY (partner_id) REFERENCES partners.partners(id) ON DELETE SET NULL
 );
 
 CREATE INDEX idx_client_accounts ON clients.accounts(client_id);
