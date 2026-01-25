@@ -1,5 +1,7 @@
 from flask import Blueprint, request, jsonify
-from models.public import db, Booking, Trip
+from models.public import db
+from models.clients import Booking
+from models.partners import ScheduledTrip
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 booking_bp = Blueprint('booking', __name__, url_prefix='/api/bookings')
@@ -17,7 +19,7 @@ def create_booking():
             if not data.get(field):
                 return jsonify({'error': f'{field} is required'}), 400
         
-        trip = Trip.query.get(data['trip_id'])
+        trip = ScheduledTrip.query.get(data['trip_id'])
         if not trip:
             return jsonify({'error': 'Trip not found'}), 404
         
@@ -104,7 +106,7 @@ def cancel_booking(booking_id):
             return jsonify({'error': 'Booking already cancelled'}), 400
         
         # Restore seats
-        trip = booking.trip
+        trip = booking.scheduled_trip
         trip.available_seats += booking.number_of_seats
         
         booking.status = 'cancelled'

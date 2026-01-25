@@ -8,3 +8,4 @@ bcrypt==4.0.1
 psycopg2-binary==2.9.9
 # Precision de la version de PyJWT pour éviter une erreur HTTP 422 Unprocessable Entity: "Subject must be a string"
 PyJWT==2.9.0
+Flask-Migrate==4.0.5

@@ -8,6 +8,9 @@ from routes.trip import trip_bp
 from routes.booking import booking_bp
 from routes.payment import payment_bp
 
+from flask_migrate import Migrate
+from models.public import db
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -20,6 +23,7 @@ def create_app():
     
     # Initialize database
     init_db(app)
+    migrate = Migrate(app, db)
     
     # Register blueprints
     app.register_blueprint(auth_bp)

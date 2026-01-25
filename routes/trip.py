@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
-from models.public import db, Trip
+from models.public import db
+from models.partners import ScheduledTrip
 from flask_jwt_extended import jwt_required
 from datetime import datetime
 
@@ -12,16 +13,16 @@ def get_trips():
         arrival_city = request.args.get('arrival_city')
         date = request.args.get('date')
         
-        query = Trip.query.filter_by(status='active')
+        query = ScheduledTrip.query.filter_by(status='active')
         
         if departure_city:
-            query = query.filter(Trip.departure_city.ilike(f'%{departure_city}%'))
+            query = query.filter(ScheduledTrip.departure_city.ilike(f'%{departure_city}%'))
         if arrival_city:
-            query = query.filter(Trip.arrival_city.ilike(f'%{arrival_city}%'))
+            query = query.filter(ScheduledTrip.arrival_city.ilike(f'%{arrival_city}%'))
         if date:
             try:
                 date_obj = datetime.strptime(date, '%Y-%m-%d').date()
-                query = query.filter(db.func.date(Trip.departure_time) == date_obj)
+                query = query.filter(db.func.date(ScheduledTrip.departure_time) == date_obj)
             except ValueError:
                 return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
         
@@ -37,7 +38,7 @@ def get_trips():
 @trip_bp.route('/<int:trip_id>', methods=['GET'])
 def get_trip(trip_id):
     try:
-        trip = Trip.query.get(trip_id)
+        trip = ScheduledTrip.query.get(trip_id)
         
         if not trip:
             return jsonify({'error': 'Trip not found'}), 404
@@ -66,7 +67,7 @@ def create_trip():
         except (ValueError, KeyError):
             return jsonify({'error': 'Invalid datetime format'}), 400
         
-        trip = Trip(
+        trip = ScheduledTrip(
             departure_city=data['departure_city'],
             arrival_city=data['arrival_city'],
             departure_time=departure_time,
