@@ -7,6 +7,7 @@ from routes.auth import auth_bp
 from routes.trip import trip_bp
 from routes.booking import booking_bp
 from routes.payment import payment_bp
+from routes.lines import lines_bp
 
 from flask_migrate import Migrate
 from models.public import db
@@ -49,6 +50,7 @@ def create_app():
     app.register_blueprint(trip_bp)
     app.register_blueprint(booking_bp)
     app.register_blueprint(payment_bp)
+    app.register_blueprint(lines_bp)
     
     @app.route('/')
     def index():

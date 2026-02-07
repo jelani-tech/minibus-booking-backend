@@ -1,0 +1,25 @@
+meta {
+  name: Get All Lignes
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/lines
+  body: none
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+vars:pre-request {
+  baseUrl: localhost
+}
+
+docs {
+  # Get All Lignes
+  
+  Récupère la liste de tous les lignes.
+}
