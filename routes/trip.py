@@ -52,10 +52,16 @@ def get_trip(trip_id):
 @jwt_required()
 def create_trip():
     try:
+        user_id = get_jwt_identity()
+        from models.public import User
+        user = User.query.get(user_id)
+        if not user or user.role != 'admin':
+             return jsonify({'error': 'Unauthorized'}), 403
+
         data = request.get_json()
         
         # Validation
-        required_fields = ['departure_city', 'arrival_city', 'departure_time', 'arrival_time', 'price', 'driver_name', 'driver_phone', 'vehicle_number']
+        required_fields = ['departure_city', 'arrival_city', 'departure_time', 'arrival_time', 'price', 'driver_name', 'driver_phone', 'vehicle_id']
         for field in required_fields:
             if not data.get(field):
                 return jsonify({'error': f'{field} is required'}), 400
@@ -66,6 +72,29 @@ def create_trip():
             arrival_time = datetime.fromisoformat(data['arrival_time'].replace('Z', '+00:00'))
         except (ValueError, KeyError):
             return jsonify({'error': 'Invalid datetime format'}), 400
+            
+        # Check Vehicle Availability
+        from models.vehicles import Vehicle
+        from sqlalchemy import or_
+        
+        vehicle = Vehicle.query.get(data['vehicle_id'])
+        if not vehicle:
+            return jsonify({'error': 'Vehicle not found'}), 404
+            
+        if vehicle.status != 'ACTIVE':
+            return jsonify({'error': 'Vehicle is not active'}), 400
+            
+        # Check for overlaps
+        overlapping = ScheduledTrip.query.filter(
+            ScheduledTrip.vehicle_id == data['vehicle_id'],
+            ScheduledTrip.status == 'active',
+            or_(
+                (ScheduledTrip.departure_time <= arrival_time) & (ScheduledTrip.arrival_time >= departure_time)
+            )
+        ).first()
+        
+        if overlapping:
+             return jsonify({'error': 'Vehicle is already booked for this time range'}), 409
         
         trip = ScheduledTrip(
             departure_city=data['departure_city'],
@@ -73,11 +102,12 @@ def create_trip():
             departure_time=departure_time,
             arrival_time=arrival_time,
             price=float(data['price']),
-            available_seats=int(data.get('available_seats', 18)),
-            total_seats=int(data.get('total_seats', 18)),
+            available_seats=int(data.get('available_seats', vehicle.capacity)), # Default to vehicle capacity
+            total_seats=int(data.get('total_seats', vehicle.capacity)),
             driver_name=data['driver_name'],
             driver_phone=data['driver_phone'],
-            vehicle_number=data['vehicle_number'],
+            # vehicle_number=data['vehicle_number'], # Deprecated
+            vehicle_id=data['vehicle_id'],
             status=data.get('status', 'active')
         )
         

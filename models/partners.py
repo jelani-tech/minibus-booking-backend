@@ -77,7 +77,8 @@ class ScheduledTrip(db.Model):
     total_seats = db.Column(db.Integer, nullable=False, default=18)
     driver_name = db.Column(db.String(100), nullable=False)
     driver_phone = db.Column(db.String(20), nullable=False)
-    vehicle_number = db.Column(db.String(50), nullable=False)
+    # vehicle_number = db.Column(db.String(50), nullable=False) # Deprecated in favor of vehicle_id
+    vehicle_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('partners.vehicles.id'), nullable=True) # Nullable for migration/flexibility
     status = db.Column(db.String(20), default='active')  # active, cancelled, completed
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
@@ -95,7 +96,8 @@ class ScheduledTrip(db.Model):
             'total_seats': self.total_seats,
             'driver_name': self.driver_name,
             'driver_phone': self.driver_phone,
-            'vehicle_number': self.vehicle_number,
+            'vehicle_id': self.vehicle_id,
+            'vehicle': self.vehicle.to_dict() if self.vehicle else None,
             'status': self.status,
             'created_at': self.created_at.isoformat()
         }

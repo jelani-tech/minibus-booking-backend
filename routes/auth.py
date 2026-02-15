@@ -61,6 +61,7 @@ def login():
         return jsonify({
             'message': 'Login successful',
             'user': user.to_dict(),
+            'role': user.role,
             'access_token': access_token
         }), 200
         

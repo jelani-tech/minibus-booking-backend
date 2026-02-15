@@ -52,6 +52,9 @@ def create_app():
     app.register_blueprint(payment_bp)
     app.register_blueprint(lines_bp)
     
+    from routes.vehicles import vehicles_bp
+    app.register_blueprint(vehicles_bp)
+    
     @app.route('/')
     def index():
         return {'message': 'Minibus Booking API', 'status': 'running'}, 200

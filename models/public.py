@@ -13,6 +13,7 @@ class User(db.Model):
     phone = db.Column(db.String(20), unique=True, nullable=False)
     email = db.Column(db.String(100), unique=True, nullable=True)
     password_hash = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(20), nullable=False, default='client') # client, admin, partner
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     bookings = db.relationship('models.clients.Booking', backref='user', lazy=True)
@@ -29,6 +30,7 @@ class User(db.Model):
             'name': self.name,
             'phone': self.phone,
             'email': self.email,
+            'role': self.role,
             'created_at': self.created_at.isoformat()
         }
 
