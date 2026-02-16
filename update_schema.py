@@ -10,10 +10,11 @@ def run_migration():
         try:
             with db.engine.connect() as conn:
                 conn.execute(text("ALTER TABLE public.users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'client'"))
+                conn.execute(text("ALTER TABLE public.users ADD COLUMN IF NOT EXISTS username VARCHAR(50) UNIQUE"))
                 conn.commit()
-                print("Added role to users")
+                print("Added role and username to users")
         except Exception as e:
-            print(f"Error adding role: {e}")
+            print(f"Error adding role/username: {e}")
 
         # 2. Create vehicles table (partners schema)
         try:

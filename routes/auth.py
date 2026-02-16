@@ -48,13 +48,21 @@ def login():
     try:
         data = request.get_json()
         
-        if not data.get('phone') or not data.get('password'):
-            return jsonify({'error': 'Phone and password are required'}), 400
+        username = data.get('username')
+        phone = data.get('phone')
+        password = data.get('password')
+
+        if not (username or phone) or not password:
+            return jsonify({'error': 'Username/Phone and password are required'}), 400
         
-        user = User.query.filter_by(phone=data['phone']).first()
+        user = None
+        if username:
+            user = User.query.filter_by(username=username).first()
+        elif phone:
+            user = User.query.filter_by(phone=phone).first()
         
-        if not user or not user.check_password(data['password']):
-            return jsonify({'error': 'Invalid phone or password'}), 401
+        if not user or not user.check_password(password):
+            return jsonify({'error': 'Invalid credentials'}), 401
         
         access_token = create_access_token(identity=user.id)
         
