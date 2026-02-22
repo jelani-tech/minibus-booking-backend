@@ -38,6 +38,16 @@ cp .env.example .env
 CREATE DATABASE minibus_db;
 ```
 
+1. **(Première fois uniquement)** Initialiser Flask-Migrate et créer la migration initiale:
+
+```bash
+export FLASK_APP=app:create_app
+flask db init
+flask db migrate -m "Initial"
+```
+
+Les migrations seront ensuite appliquées automatiquement à chaque démarrage de l'app.
+
 1. Lancer l'application:
 
 ```bash

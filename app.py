@@ -1,4 +1,5 @@
-from flask import Flask
+import os
+from flask import Flask, current_app
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from config import Config
@@ -9,42 +10,42 @@ from routes.booking import booking_bp
 from routes.payment import payment_bp
 from routes.lines import lines_bp
 
-from flask_migrate import Migrate
+from flask_migrate import Migrate, upgrade
 from models.public import db
-import models.transport # Register transport models
+# Import all models so Flask-Migrate sees them for migrations
+import models.transport
+import models.clients
+import models.partners
+import models.common
+import models.vehicles
+
 
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
-    
+
     # Initialize JWT Manager
     jwt = JWTManager(app)
-    
+
     # Enable CORS
     CORS(app, resources={r"/api/*": {"origins": "*"}})
-    
-    # Initialize database
+
+    # Initialize database and Flask-Migrate
     init_db(app)
-    migrate = Migrate(app, db)
-    
-    # Import lines from Excel on startup
+    Migrate(app, db)
+
+    # Apply pending migrations automatically at startup (only if migrations folder exists)
     with app.app_context():
-        # Create tables if they don't exist (basic check, migration is better but this ensures models are known)
-        # db.create_all() # Schema management is handled by migrations usually, but for new models we might need this or a migration.
-        # User asked for "structure of a table", implies creation.
-        # Let's import the service and run it.
-        from services.import_lines import import_lines_from_excel
-        # We need to ensure tables exist. Since we added new models, we should probably run a migration or db.create_all() for the new schema?
-        # Given the user context, auto-creation might be preferred for "launching the application".
-        # However, `init_db` might already handle some of this? Let's check `database.py`.
-        # For now, let's just call the import. 
-        # CAUTION: If tables don't exist, this will fail. 
-        # I'll rely on Flask-Migrate or manual creation, but to accept the user request "at launch", I should try to ensure it runs.
-        try:
-             import_lines_from_excel()
-        except Exception as e:
-             print(f"Startup import failed: {e}")
-    
+        migrate_dir = current_app.extensions["migrate"].directory
+        if os.path.isdir(migrate_dir):
+            try:
+                upgrade()
+                print("Migrations applied successfully")
+            except Exception as e:
+                print(f"Migration warning: {e}")
+        else:
+            print("Dossier 'migrations' absent. Première fois : flask db init puis flask db migrate -m 'Initial'")
+
     # Register blueprints
     app.register_blueprint(auth_bp)
     app.register_blueprint(trip_bp)
@@ -67,5 +68,12 @@ def create_app():
 
 if __name__ == '__main__':
     app = create_app()
+    # Import lines from Excel only when starting the server (not for CLI: flask db init, etc.)
+    with app.app_context():
+        try:
+            from services.import_lines import import_lines_from_excel
+            import_lines_from_excel()
+        except Exception as e:
+            print(f"Startup import failed: {e}")
     app.run(debug=True, host='0.0.0.0', port=8000)
 
