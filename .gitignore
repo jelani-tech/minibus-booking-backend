@@ -12,5 +12,6 @@ ENV/
 .env
 .DS_Store
 *.log
+/.idea
 
 .vscode/launch.json

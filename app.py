@@ -13,10 +13,8 @@ from routes.lines import lines_bp
 from flask_migrate import Migrate, upgrade
 from models.public import db
 # Import all models so Flask-Migrate sees them for migrations
-import models.transport
 import models.clients
 import models.partners
-import models.common
 import models.vehicles
 
 

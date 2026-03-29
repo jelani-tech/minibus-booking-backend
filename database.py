@@ -12,7 +12,7 @@ def init_db(app):
         try:
             db.session.execute(db.text("CREATE SCHEMA IF NOT EXISTS clients"))
             db.session.execute(db.text("CREATE SCHEMA IF NOT EXISTS partners"))
-            db.session.execute(db.text("CREATE SCHEMA IF NOT EXISTS common"))
+            db.session.execute(db.text("CREATE SCHEMA IF NOT EXISTS public"))
             db.session.commit()
         except Exception as e:
             print(f"Schema creation warning: {e}")

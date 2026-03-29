@@ -1,4 +1,4 @@
-from models.transport import Line, Stop
+from models.public import Line, Stop
 
 class LineService:
     @staticmethod

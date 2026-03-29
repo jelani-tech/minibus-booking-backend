@@ -1,7 +1,7 @@
 import pandas as pd
 import uuid
-from models.public import db
-from models.transport import Line, Stop
+from models.public import db, Station
+from models.public import Line, Stop
 
 def parse_coordinates(coord_str):
     """
@@ -105,18 +105,24 @@ def import_lines_from_excel(file_path='lines.xlsx'):
         Stop.query.filter_by(line_id=line.id).delete()
         
         for index, row in df.iterrows():
-            stop_name = row.get('Stops')
+            station_name = row.get('Stops')
             geo_coords = row.get('Geographic Coordinates')
             
-            if pd.isna(stop_name):
+            if pd.isna(station_name):
                 continue
                 
             lat, lon = parse_coordinates(geo_coords)
-            
+
+            station_id = uuid.uuid4(),
+            station = Station(
+                id=station_id,
+                name=station_name,
+            )
+            db.session.add(station)
             stop = Stop(
                 id=uuid.uuid4(),
+                station_id=station_id,
                 line_id=line.id,
-                name=stop_name,
                 latitude=lat,
                 longitude=lon,
                 order=index

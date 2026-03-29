@@ -48,6 +48,14 @@ flask db migrate -m "Initial"
 
 Les migrations seront ensuite appliquées automatiquement à chaque démarrage de l'app.
 
+**Si la base existait déjà** (erreur « relation already exists » ou « Target database is not up to date »), aligner Alembic sur l’état actuel sans réexécuter les créations de tables :
+
+```bash
+flask db stamp head
+```
+
+Ensuite vous pouvez créer de nouvelles migrations (`flask db migrate -m "..."`) et les appliquer au démarrage.
+
 1. Lancer l'application:
 
 ```bash
