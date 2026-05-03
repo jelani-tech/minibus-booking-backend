@@ -25,6 +25,18 @@ def create_app():
     # Initialize JWT Manager
     jwt = JWTManager(app)
 
+    @jwt.expired_token_loader
+    def expired_token_callback(jwt_header, jwt_payload):
+        return {'error': 'Session expired', 'code': 'token_expired'}, 401
+
+    @jwt.invalid_token_loader
+    def invalid_token_callback(reason):
+        return {'error': 'Invalid token', 'code': 'invalid_token', 'detail': reason}, 401
+
+    @jwt.unauthorized_loader
+    def missing_token_callback(reason):
+        return {'error': 'Authentication required', 'code': 'missing_token', 'detail': reason}, 401
+
     # Enable CORS
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 

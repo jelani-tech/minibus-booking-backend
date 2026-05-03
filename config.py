@@ -10,6 +10,7 @@ else:
     load_dotenv()
 
 class Config:
+    APP_ENV = os.environ.get('APP_ENV', 'development')
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
     SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'postgresql://user:password@localhost/minibus_db'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
