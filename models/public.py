@@ -1,6 +1,7 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import bcrypt
+import uuid
 
 db = SQLAlchemy()
 
@@ -8,7 +9,7 @@ class User(db.Model):
     __tablename__ = 'users'
     __table_args__ = {'schema': 'public'}
     
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = db.Column(db.String(100), nullable=False)
     phone = db.Column(db.String(20), unique=True, nullable=False)
     email = db.Column(db.String(100), unique=True, nullable=True)
@@ -37,7 +38,7 @@ class Line(db.Model):
     __tablename__ = 'lines'
     __table_args__ = {'schema': 'public'}
     
-    id = db.Column(db.UUID(as_uuid=True), primary_key=True)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = db.Column(db.String(100), nullable=False, unique=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -55,7 +56,7 @@ class Station(db.Model):
     __tablename__ = 'stations'
     __table_args__ = {'schema': 'public'}
 
-    id = db.Column(db.UUID(as_uuid=True), primary_key=True)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = db.Column(db.String(100), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -72,7 +73,7 @@ class Stop(db.Model):
     __tablename__ = 'stops'
     __table_args__ = {'schema': 'public'}
 
-    id = db.Column(db.UUID(as_uuid=True), primary_key=True)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     line_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('public.lines.id'), nullable=False)
     station_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('public.stations.id'), nullable=False)
     longitude = db.Column(db.Float, nullable=False)
@@ -97,7 +98,7 @@ class Step(db.Model):
     __tablename__ = 'steps'
     __table_args__ = {'schema': 'public'}
 
-    id = db.Column(db.UUID(as_uuid=True), primary_key=True)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     trip_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('clients.trips.id'), nullable=False)
     client_transaction_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('clients.transactions.id'), nullable=False)
     partner_transaction_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('partners.transactions.id'), nullable=False)

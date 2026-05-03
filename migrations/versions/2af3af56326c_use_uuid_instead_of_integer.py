@@ -1,8 +1,8 @@
-"""Initial
+"""use uuid instead of integer
 
-Revision ID: 51188e12091d
+Revision ID: 2af3af56326c
 Revises: 
-Create Date: 2026-03-29 15:52:14.384420
+Create Date: 2026-05-03 17:33:22.073150
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '51188e12091d'
+revision = '2af3af56326c'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -36,7 +36,7 @@ def upgrade():
     schema='public'
     )
     op.create_table('users',
-    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('name', sa.String(length=100), nullable=False),
     sa.Column('phone', sa.String(length=20), nullable=False),
     sa.Column('email', sa.String(length=100), nullable=True),
@@ -49,7 +49,7 @@ def upgrade():
     )
     op.create_table('clients',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.Column('updated_at', sa.DateTime(), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['public.users.id'], ),
@@ -58,7 +58,7 @@ def upgrade():
     )
     op.create_table('partners',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.Column('updated_at', sa.DateTime(), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['public.users.id'], ),
@@ -138,7 +138,7 @@ def upgrade():
     schema='partners'
     )
     op.create_table('scheduled_trips',
-    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('departure_city', sa.String(length=100), nullable=False),
     sa.Column('arrival_city', sa.String(length=100), nullable=False),
     sa.Column('departure_time', sa.DateTime(), nullable=False),
@@ -170,9 +170,9 @@ def upgrade():
     schema='partners'
     )
     op.create_table('bookings',
-    sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('user_id', sa.Integer(), nullable=False),
-    sa.Column('trip_id', sa.Integer(), nullable=False),
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('trip_id', sa.UUID(), nullable=False),
     sa.Column('number_of_seats', sa.Integer(), nullable=False),
     sa.Column('total_price', sa.Float(), nullable=False),
     sa.Column('status', sa.String(length=20), nullable=True),
@@ -204,8 +204,8 @@ def upgrade():
     schema='public'
     )
     op.create_table('payments',
-    sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('booking_id', sa.Integer(), nullable=False),
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('booking_id', sa.UUID(), nullable=False),
     sa.Column('amount', sa.Float(), nullable=False),
     sa.Column('payment_method', sa.String(length=20), nullable=False),
     sa.Column('transaction_id', sa.String(length=100), nullable=True),

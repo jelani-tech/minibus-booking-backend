@@ -30,7 +30,10 @@ def create_app():
 
     # Initialize database and Flask-Migrate
     init_db(app)
-    Migrate(app, db)
+    # Multi-schema project (public/clients/partners):
+    # include_schemas=True is required so Alembic autogenerate can resolve
+    # cross-schema foreign keys (e.g. public.steps -> partners.partners).
+    Migrate(app, db, include_schemas=True)
 
     # Apply pending migrations automatically at startup (only if migrations folder exists)
     with app.app_context():

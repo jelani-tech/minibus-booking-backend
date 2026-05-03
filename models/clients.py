@@ -1,13 +1,14 @@
 from datetime import datetime
 from models.public import db
+import uuid
 
 
 class Client(db.Model):
     __tablename__ = 'clients'
     __table_args__ = {'schema': 'clients'}
 
-    id = db.Column(db.UUID(as_uuid=True), primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('public.users.id'), nullable=False)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('public.users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -24,7 +25,7 @@ class Account(db.Model):
     __tablename__ = 'accounts'
     __table_args__ = {'schema': 'clients'}
 
-    id = db.Column(db.UUID(as_uuid=True), primary_key=True)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     client_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('clients.clients.id'), nullable=False)
     balance = db.Column(db.Float, nullable=False, default=0.0)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -42,7 +43,7 @@ class Trip(db.Model):
     __tablename__ = 'trips'
     __table_args__ = {'schema': 'clients'}
 
-    id = db.Column(db.UUID(as_uuid=True), primary_key=True)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     client_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('clients.clients.id'), nullable=False)
     step_number = db.Column(db.Integer, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -59,7 +60,7 @@ class Transaction(db.Model):
     __tablename__ = 'transactions'
     __table_args__ = {'schema': 'clients'}
 
-    id = db.Column(db.UUID(as_uuid=True), primary_key=True)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     client_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('clients.clients.id'), nullable=False)
     type = db.Column(db.Enum('TRANSPORT_FEES', 'WALLET_CREDITING', name='client_transaction_type', schema='clients'), nullable=False)
     amount = db.Column(db.Float, nullable=False)
@@ -86,9 +87,9 @@ class Booking(db.Model):
     __tablename__ = 'bookings'
     __table_args__ = {'schema': 'clients'}
     
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('public.users.id'), nullable=False)
-    trip_id = db.Column(db.Integer, db.ForeignKey('partners.scheduled_trips.id'), nullable=False)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('public.users.id'), nullable=False)
+    trip_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('partners.scheduled_trips.id'), nullable=False)
     number_of_seats = db.Column(db.Integer, nullable=False, default=1)
     total_price = db.Column(db.Float, nullable=False)
     status = db.Column(db.String(20), default='pending')  # pending, confirmed, cancelled
@@ -116,8 +117,8 @@ class Payment(db.Model):
     __tablename__ = 'payments'
     __table_args__ = {'schema': 'clients'}
     
-    id = db.Column(db.Integer, primary_key=True)
-    booking_id = db.Column(db.Integer, db.ForeignKey('clients.bookings.id'), nullable=False, unique=True)
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    booking_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('clients.bookings.id'), nullable=False, unique=True)
     amount = db.Column(db.Float, nullable=False)
     payment_method = db.Column(db.String(20), nullable=False)  # wave, orange_money, mtn_momo
     transaction_id = db.Column(db.String(100), unique=True, nullable=True)
