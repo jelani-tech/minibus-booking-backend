@@ -1,4 +1,5 @@
 import os
+import click
 from flask import Flask, current_app
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
@@ -65,28 +66,41 @@ def create_app():
     app.register_blueprint(booking_bp)
     app.register_blueprint(payment_bp)
     app.register_blueprint(lines_bp)
-    
+
     from routes.vehicles import vehicles_bp
     app.register_blueprint(vehicles_bp)
-    
+
     @app.route('/')
     def index():
         return {'message': 'Minibus Booking API', 'status': 'running'}, 200
-    
+
     @app.route('/health', methods=['GET'])
     def health():
         return {'status': 'healthy'}, 200
-    
+
+    # ---------------------------------------------------------------------------
+    # CLI commands (disponibles via `flask <cmd>`)
+    # ---------------------------------------------------------------------------
+
+    @app.cli.command("seed-lines")
+    @click.option("--file", default="lines.xlsx", show_default=True, help="Chemin vers le fichier Excel")
+    def seed_lines(file):
+        """Importe les lignes et arrêts depuis un fichier Excel (local uniquement).
+
+        Usage:
+            docker exec minibus_local_backend flask seed-lines
+            docker exec minibus_local_backend flask seed-lines --file /app/other.xlsx
+        """
+        if current_app.config.get("APP_ENV") != "development":
+            click.echo("❌ Cette commande n'est disponible qu'en environnement 'development'.", err=True)
+            raise SystemExit(1)
+        from services.import_lines import import_lines_from_excel
+        import_lines_from_excel(file_path=file)
+
     return app
+
 
 if __name__ == '__main__':
     app = create_app()
-    # Import lines from Excel only when starting the server (not for CLI: flask db init, etc.)
-    with app.app_context():
-        try:
-            from services.import_lines import import_lines_from_excel
-            import_lines_from_excel()
-        except Exception as e:
-            print(f"Startup import failed: {e}")
     app.run(debug=True, host='0.0.0.0', port=8000)
 

@@ -13,7 +13,7 @@ services:
       - minibus_local_postgres_data:/var/lib/postgresql/data
       - ./local_db:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d minibus_db"]
+      test: [ "CMD-SHELL", "pg_isready -U user -d minibus_db" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -30,6 +30,7 @@ services:
       - DATABASE_URL=postgresql://user:password@postgres:5432/minibus_db
       - FLASK_APP=app.py
       - FLASK_DEBUG=1
+      - APP_ENV=development
       - AUTO_UPGRADE_DB=false
       - LEGACY_SCHEMA_BOOTSTRAP=false
     depends_on:

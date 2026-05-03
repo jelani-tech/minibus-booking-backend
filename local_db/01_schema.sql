@@ -1,5 +1,20 @@
 create extension if not exists pgcrypto;
 
+-- ============================================================
+-- Schema AUTH : gestion des identifiants (inspire de Supabase)
+-- La table auth.users stocke uniquement les credentials.
+-- Le profil metier reste dans public.customers.
+-- ============================================================
+create schema if not exists auth;
+
+create table auth.users (
+    id               uuid primary key default gen_random_uuid(),
+    phone            text unique not null,
+    encrypted_password text not null,
+    created_at       timestamptz not null default timezone('utc', now()),
+    updated_at       timestamptz not null default timezone('utc', now())
+);
+
 create type partner_status as enum ('pending', 'active', 'inactive');
 create type vehicle_energy_type as enum ('diesel', 'essence', 'electric', 'hybrid');
 create type vehicle_status as enum ('available', 'assigned', 'maintenance', 'inactive');
@@ -150,6 +165,8 @@ create index trips_planned_start_idx on trips (planned_start_datetime);
 
 create table customers (
     id uuid primary key default gen_random_uuid(),
+    -- Lien vers auth.users (nullable : un client peut exister sans compte app)
+    auth_user_id     uuid unique references auth.users(id) on delete set null,
     first_name text not null,
     last_name text,
     phone text not null,
@@ -163,6 +180,7 @@ create table customers (
 create index customers_phone_idx on customers (phone);
 create index customers_whatsapp_phone_idx on customers (whatsapp_phone);
 create index customers_email_idx on customers (lower(email));
+create index customers_auth_user_id_idx on customers (auth_user_id);
 
 create table bookings (
     id uuid primary key default gen_random_uuid(),
@@ -282,6 +300,7 @@ begin
 end;
 $$;
 
+create trigger trg_auth_users_updated_at before update on auth.users for each row execute function set_updated_at();
 create trigger trg_partners_updated_at before update on partners for each row execute function set_updated_at();
 create trigger trg_vehicles_updated_at before update on vehicles for each row execute function set_updated_at();
 create trigger trg_drivers_updated_at before update on drivers for each row execute function set_updated_at();

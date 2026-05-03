@@ -3,9 +3,75 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID, uuid4
 
+import bcrypt
 from sqlalchemy import text
 
 from models.public import db
+
+
+# ---------------------------------------------------------------------------
+# Auth repository — gère auth.users (credentials uniquement)
+# ---------------------------------------------------------------------------
+
+class SupabaseAuthRepository:
+    """Gère les entrées dans auth.users pour l'authentification par mot de passe.
+
+    La table auth.users ne contient que le téléphone et le mot de passe hashé.
+    Le profil métier est dans public.customers (lié via auth_user_id).
+    """
+
+    def create(self, *, phone: str, password: str) -> dict[str, Any]:
+        """Crée un utilisateur dans auth.users avec le mot de passe hashé."""
+        encrypted = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    insert into auth.users (phone, encrypted_password)
+                    values (:phone, :encrypted_password)
+                    returning *
+                    """
+                ),
+                {"phone": phone, "encrypted_password": encrypted},
+            )
+            .mappings()
+            .one()
+        )
+        return dict(row)
+
+    def find_by_phone(self, phone: str) -> dict[str, Any] | None:
+        """Retourne l'entrée auth.users pour ce numéro, ou None."""
+        row = (
+            db.session.execute(
+                text("select * from auth.users where phone = :phone"),
+                {"phone": phone},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    def verify_password(self, phone: str, password: str) -> dict[str, Any] | None:
+        """Vérifie le mot de passe. Retourne l'entrée auth.users si ok, sinon None."""
+        auth_user = self.find_by_phone(phone)
+        if not auth_user:
+            return None
+        is_valid = bcrypt.checkpw(
+            password.encode(),
+            auth_user["encrypted_password"].encode(),
+        )
+        return auth_user if is_valid else None
+
+    def get(self, auth_user_id: UUID | str) -> dict[str, Any] | None:
+        row = (
+            db.session.execute(
+                text("select * from auth.users where id = cast(:id as uuid)"),
+                {"id": str(auth_user_id)},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
 
 
 BOOKING_DETAILS_SQL = """
@@ -105,6 +171,7 @@ class SupabaseCustomerRepository:
         name: str,
         phone: str,
         email: str | None = None,
+        auth_user_id: UUID | str | None = None,
     ) -> dict[str, Any]:
         existing = self.find_by_phone(phone)
         first_name, last_name = split_customer_name(name)
@@ -118,6 +185,7 @@ class SupabaseCustomerRepository:
                         set first_name = :first_name,
                             last_name = :last_name,
                             email = coalesce(:email, email),
+                            auth_user_id = coalesce(cast(:auth_user_id as uuid), auth_user_id),
                             updated_at = timezone('utc', now())
                         where id = cast(:customer_id as uuid)
                         returning *
@@ -128,6 +196,7 @@ class SupabaseCustomerRepository:
                         "first_name": first_name,
                         "last_name": last_name,
                         "email": email,
+                        "auth_user_id": str(auth_user_id) if auth_user_id else None,
                     },
                 )
                 .mappings()
@@ -140,17 +209,19 @@ class SupabaseCustomerRepository:
                 text(
                     """
                     insert into public.customers (
+                        auth_user_id,
                         first_name,
                         last_name,
                         phone,
                         whatsapp_phone,
                         email
                     )
-                    values (:first_name, :last_name, :phone, :phone, :email)
+                    values (cast(:auth_user_id as uuid), :first_name, :last_name, :phone, :phone, :email)
                     returning *
                     """
                 ),
                 {
+                    "auth_user_id": str(auth_user_id) if auth_user_id else None,
                     "first_name": first_name,
                     "last_name": last_name,
                     "phone": phone,
@@ -161,6 +232,24 @@ class SupabaseCustomerRepository:
             .one()
         )
         return dict(row)
+
+    def find_by_auth_user_id(self, auth_user_id: UUID | str) -> dict[str, Any] | None:
+        """Récupère le profil customer lié à un auth_user_id."""
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    select *
+                    from public.customers
+                    where auth_user_id = cast(:auth_user_id as uuid)
+                    """
+                ),
+                {"auth_user_id": str(auth_user_id)},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
 
 
 class SupabaseBookingRepository:
