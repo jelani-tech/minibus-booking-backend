@@ -10,6 +10,9 @@ ENV/
 *.db
 *.sqlite
 .env
+.env.local
+.env.development
+.env.test
 .DS_Store
 *.log
 /.idea

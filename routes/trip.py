@@ -1,10 +1,15 @@
 from flask import Blueprint, request, jsonify
 from models.public import db
 from models.partners import ScheduledTrip
-from flask_jwt_extended import jwt_required
+from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
+from uuid import UUID
+
+from application.api_serializers import trip_row_to_api
+from infrastructure.supabase_read_repositories import SupabaseTripRepository
 
 trip_bp = Blueprint('trip', __name__, url_prefix='/api/trips')
+trip_repository = SupabaseTripRepository()
 
 @trip_bp.route('', methods=['GET'])
 def get_trips():
@@ -12,38 +17,36 @@ def get_trips():
         departure_city = request.args.get('departure_city')
         arrival_city = request.args.get('arrival_city')
         date = request.args.get('date')
-        
-        query = ScheduledTrip.query.filter_by(status='active')
-        
-        if departure_city:
-            query = query.filter(ScheduledTrip.departure_city.ilike(f'%{departure_city}%'))
-        if arrival_city:
-            query = query.filter(ScheduledTrip.arrival_city.ilike(f'%{arrival_city}%'))
+
+        trip_date = None
         if date:
             try:
-                date_obj = datetime.strptime(date, '%Y-%m-%d').date()
-                query = query.filter(db.func.date(ScheduledTrip.departure_time) == date_obj)
+                trip_date = datetime.strptime(date, '%Y-%m-%d').date()
             except ValueError:
                 return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
-        
-        trips = query.all()
-        
+
+        trips = trip_repository.search(
+            origin_name=departure_city,
+            destination_name=arrival_city,
+            trip_date=trip_date,
+        )
+
         return jsonify({
-            'trips': [trip.to_dict() for trip in trips]
+            'trips': [trip_row_to_api(trip) for trip in trips]
         }), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@trip_bp.route('/<int:trip_id>', methods=['GET'])
+@trip_bp.route('/<uuid:trip_id>', methods=['GET'])
 def get_trip(trip_id):
     try:
-        trip = ScheduledTrip.query.get(trip_id)
+        trip = trip_repository.get(trip_id)
         
         if not trip:
             return jsonify({'error': 'Trip not found'}), 404
         
-        return jsonify({'trip': trip.to_dict()}), 200
+        return jsonify({'trip': trip_row_to_api(trip)}), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500

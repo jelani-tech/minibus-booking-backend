@@ -35,17 +35,17 @@ def create_app():
     # cross-schema foreign keys (e.g. public.steps -> partners.partners).
     Migrate(app, db, include_schemas=True)
 
-    # Apply pending migrations automatically at startup (only if migrations folder exists)
-    with app.app_context():
-        migrate_dir = current_app.extensions["migrate"].directory
-        if os.path.isdir(migrate_dir):
-            try:
-                upgrade()
-                print("Migrations applied successfully")
-            except Exception as e:
-                print(f"Migration warning: {e}")
-        else:
-            print("Dossier 'migrations' absent. Première fois : flask db init puis flask db migrate -m 'Initial'")
+    if app.config.get("AUTO_UPGRADE_DB"):
+        with app.app_context():
+            migrate_dir = current_app.extensions["migrate"].directory
+            if os.path.isdir(migrate_dir):
+                try:
+                    upgrade()
+                    print("Migrations applied successfully")
+                except Exception as e:
+                    print(f"Migration warning: {e}")
+            else:
+                print("Dossier 'migrations' absent. Première fois : flask db init puis flask db migrate -m 'Initial'")
 
     # Register blueprints
     app.register_blueprint(auth_bp)

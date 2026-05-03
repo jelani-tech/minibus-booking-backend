@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: minibus_local_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: minibus_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - minibus_local_postgres_data:/var/lib/postgresql/data
+      - ./local_db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d minibus_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: .
+    container_name: minibus_local_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/minibus_db
+      - FLASK_APP=app.py
+      - FLASK_DEBUG=1
+      - AUTO_UPGRADE_DB=false
+      - LEGACY_SCHEMA_BOOTSTRAP=false
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  minibus_local_postgres_data:

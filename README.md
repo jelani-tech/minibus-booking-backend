@@ -62,6 +62,67 @@ Ensuite vous pouvez créer de nouvelles migrations (`flask db migrate -m "..."`)
 python app.py
 ```
 
+## Developpement local avec la base miroir Supabase
+
+En developpement, utilisez la base PostgreSQL locale definie par
+`docker-compose.local.yml`. Elle evite de toucher a Supabase et reprend le
+schema applicatif cible.
+
+### Option recommandee: backend et base dans Docker
+
+```powershell
+.\scripts\dev.ps1
+```
+
+Equivalent manuel:
+
+```bash
+docker compose -f docker-compose.local.yml up -d postgres backend
+```
+
+Le backend sera disponible sur `http://localhost:8000`.
+
+### Option alternative: backend local, base dans Docker
+
+Demarrez seulement la base:
+
+```powershell
+.\scripts\dev-db.ps1
+```
+
+Copiez ensuite le fichier d'environnement de developpement:
+
+```powershell
+Copy-Item .env.development.example .env.development
+$env:APP_ENV = "development"
+python app.py
+```
+
+`config.py` charge automatiquement `.env.development` quand `APP_ENV=development`.
+La variable importante est:
+
+```text
+DATABASE_URL=postgresql://user:password@localhost:5432/minibus_db
+```
+
+La base locale initialise les tables `public.partners`, `vehicles`, `drivers`,
+`lines`, `stops`, `line_stops`, `trips`, `customers`, `bookings`, `payments`,
+les enums, vues et triggers principaux.
+
+`init_db` reste utile pour attacher SQLAlchemy a Flask, mais ne cree plus de
+schemas ni n'applique les migrations automatiquement en developpement. Les
+migrations Alembic legacy sont opt-in uniquement:
+
+```bash
+AUTO_UPGRADE_DB=true LEGACY_SCHEMA_BOOTSTRAP=true python app.py
+```
+
+Pour lancer les tests de lecture contre la base locale:
+
+```powershell
+.\scripts\test-local.ps1
+```
+
 ## Structure du projet
 
 ```text
