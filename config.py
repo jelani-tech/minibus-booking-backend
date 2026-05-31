@@ -36,3 +36,6 @@ class Config:
     MTN_MOMO_SUBSCRIPTION_KEY = os.environ.get('MTN_MOMO_SUBSCRIPTION_KEY') or ''
     MTN_MOMO_API_URL = os.environ.get('MTN_MOMO_API_URL') or 'https://sandbox.momodeveloper.mtn.com'
 
+    PAYSTACK_SECRET_KEY = os.environ.get('PAYSTACK_SECRET_KEY') or ''
+    PAYSTACK_URL = os.environ.get('PAYSTACK_URL') or ''
+

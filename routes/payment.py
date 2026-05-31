@@ -1,3 +1,4 @@
+import logging
 from uuid import uuid4
 
 from flask import Blueprint, current_app, jsonify, request
@@ -11,8 +12,11 @@ from infrastructure.supabase_write_repositories import (
 from models.public import db
 from services.mtn_momo import MTNMomoService
 from services.orange_money import OrangeMoneyService
+from services.paystack_service import PaystackService
 from services.wave_payment import WavePaymentService
 
+
+logger = logging.getLogger()
 payment_bp = Blueprint('payment', __name__, url_prefix='/api/payments')
 booking_repository = SupabaseBookingRepository()
 payment_repository = SupabasePaymentRepository()
@@ -25,12 +29,13 @@ def is_mock_payment_enabled() -> bool:
 @payment_bp.route('/initiate', methods=['POST'])
 @jwt_required()
 def initiate_payment():
+    logger.info('Initiating payment', extra={'request': request})
     try:
-        customer_id = get_jwt_identity()
         data = request.get_json() or {}
+        customer_id = get_jwt_identity()
 
-        if not data.get('booking_id') or not data.get('payment_method'):
-            return jsonify({'error': 'booking_id and payment_method are required'}), 400
+        if not data.get('booking_id'):
+            return jsonify({'error': 'booking_id is required'}), 400
 
         booking = booking_repository.get(data['booking_id'])
         if not booking:
@@ -40,42 +45,26 @@ def initiate_payment():
         if booking['booking_status'] != 'pending':
             return jsonify({'error': 'Booking is not pending payment'}), 400
 
-        payment_method = data['payment_method'].lower()
         existing_payment = payment_repository.get_for_booking(data['booking_id'])
         if existing_payment and existing_payment['status'] in ('paid', 'completed'):
             return jsonify({'error': 'Payment already completed'}), 400
 
         provider_reference = f"JELANI-{uuid4()}"
-        payment_url = None
-        payment_response = {
-            "transaction_id": provider_reference,
-            "status": "pending",
-            "mock": True,
-        }
 
-        if not is_mock_payment_enabled():
-            if payment_method == 'wave':
-                service = WavePaymentService()
-            elif payment_method == 'orange_money':
-                service = OrangeMoneyService()
-            elif payment_method == 'mtn_momo':
-                service = MTNMomoService()
-            else:
-                return jsonify({'error': 'Invalid payment method'}), 400
+        service = PaystackService()
 
-            payment_response = service.initiate_payment(
-                amount=booking['total_price'],
-                phone=data.get('phone') or booking['customer_phone'],
-                transaction_id=provider_reference,
-            )
-            provider_reference = payment_response.get('transaction_id') or provider_reference
-            payment_url = payment_response.get('payment_url')
+        payment_response = service.initialize_payment(
+            amount=float(booking['total_price']) * 100,
+            email=data['payment_email'],
+        )
+        provider_reference = payment_response.get('reference') or provider_reference
+        payment_url = payment_response.get('authorization_url')
 
         payment = payment_repository.create_or_update(
             booking_id=data['booking_id'],
             customer_id=customer_id,
             amount=booking['total_price'],
-            provider=payment_method,
+            provider='paystack',
             provider_reference=provider_reference,
             provider_payment_url=payment_url,
             raw_provider_response=payment_response,
@@ -98,13 +87,13 @@ def initiate_payment():
 def payment_webhook():
     try:
         data = request.get_json() or {}
-        transaction_id = data.get('transaction_id') or data.get('provider_reference')
+        reference = data.get('reference')
 
-        if not transaction_id:
-            return jsonify({'error': 'transaction_id is required'}), 400
+        if not reference:
+            return jsonify({'error': 'reference is missing'}), 400
 
         payment = payment_repository.update_status_by_reference(
-            provider_reference=transaction_id,
+            provider_reference=reference,
             status=data.get('status', 'pending').lower(),
         )
         if not payment:
