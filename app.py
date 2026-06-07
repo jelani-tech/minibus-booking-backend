@@ -13,6 +13,8 @@ from routes.lines import lines_bp
 
 from flask_migrate import Migrate, upgrade
 from models.public import db
+from loguru import logger
+from logger import setup_logging
 # Import all models so Flask-Migrate sees them for migrations
 import models.clients
 import models.partners
@@ -22,6 +24,11 @@ import models.vehicles
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+
+    setup_logging(
+        logtail_token=os.getenv("LOGTAIL_TOKEN"),
+        log_level=os.getenv("LOG_LEVEL", "INFO"),
+    )
 
     # Initialize JWT Manager
     jwt = JWTManager(app)
@@ -77,6 +84,23 @@ def create_app():
     @app.route('/health', methods=['GET'])
     def health():
         return {'status': 'healthy'}, 200
+
+
+    @app.after_request
+    def log_request(response):
+        from flask import request
+        logger.info(
+            f"{request.method} {request.path} → {response.status_code}"
+        )
+        return response
+
+    # ── Log les erreurs non gérées ───────────────────────────────────────────
+    @app.errorhandler(Exception)
+    def handle_exception(e):
+        from flask import request
+        logger.exception(f"Erreur non gérée sur {request.path}: {e}")
+        return {'error': 'Erreur interne'}, 500
+
 
     # ---------------------------------------------------------------------------
     # CLI commands (disponibles via `flask <cmd>`)

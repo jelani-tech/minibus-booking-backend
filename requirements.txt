@@ -11,3 +11,5 @@ PyJWT==2.9.0
 Flask-Migrate==4.0.5
 pandas
 openpyxl
+loguru
+logtail-python

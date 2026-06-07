@@ -10,13 +10,10 @@ from infrastructure.supabase_write_repositories import (
     SupabasePaymentRepository,
 )
 from models.public import db
-from services.mtn_momo import MTNMomoService
-from services.orange_money import OrangeMoneyService
 from services.paystack_service import PaystackService
-from services.wave_payment import WavePaymentService
+from loguru import logger
 
 
-logger = logging.getLogger()
 payment_bp = Blueprint('payment', __name__, url_prefix='/api/payments')
 booking_repository = SupabaseBookingRepository()
 payment_repository = SupabasePaymentRepository()
@@ -29,15 +26,17 @@ def is_mock_payment_enabled() -> bool:
 @payment_bp.route('/initiate', methods=['POST'])
 @jwt_required()
 def initiate_payment():
-    logger.info('Initiating payment', extra={'request': request})
-    try:
-        data = request.get_json() or {}
-        customer_id = get_jwt_identity()
+    data = request.get_json() or {}
+    customer_id = get_jwt_identity()
+    booking_id = data['booking_id']
+    log_context = {'customer_id':customer_id, 'booking_id':booking_id}
+    logger.info(f"Initiating payment : {log_context}")
 
-        if not data.get('booking_id'):
+    try:
+        if not booking_id:
             return jsonify({'error': 'booking_id is required'}), 400
 
-        booking = booking_repository.get(data['booking_id'])
+        booking = booking_repository.get(booking_id)
         if not booking:
             return jsonify({'error': 'Booking not found'}), 404
         if str(booking['customer_id']) != str(customer_id):
@@ -45,7 +44,7 @@ def initiate_payment():
         if booking['booking_status'] != 'pending':
             return jsonify({'error': 'Booking is not pending payment'}), 400
 
-        existing_payment = payment_repository.get_for_booking(data['booking_id'])
+        existing_payment = payment_repository.get_for_booking(booking_id)
         if existing_payment and existing_payment['status'] in ('paid', 'completed'):
             return jsonify({'error': 'Payment already completed'}), 400
 
@@ -61,7 +60,7 @@ def initiate_payment():
         payment_url = payment_response.get('authorization_url')
 
         payment = payment_repository.create_or_update(
-            booking_id=data['booking_id'],
+            booking_id=booking_id,
             customer_id=customer_id,
             amount=booking['total_price'],
             provider='paystack',
@@ -71,6 +70,8 @@ def initiate_payment():
         )
         db.session.commit()
 
+        logger.info(f'Payment initiated successfully:{log_context}')
+
         return jsonify({
             'message': 'Payment initiated successfully',
             'payment': payment_row_to_api(payment),
@@ -79,22 +80,26 @@ def initiate_payment():
         }), 200
 
     except Exception as e:
+        logger.error(f"Payment failed : {log_context} , error: {str(e)}")
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
 
 @payment_bp.route('/webhook', methods=['POST'])
 def payment_webhook():
+    data = request.get_json() or {}
+    reference = data.get('reference')
+    status = data.get('status','pending').lower()
+    logger.info(f"Payment webhook received : {reference, status}")
     try:
-        data = request.get_json() or {}
-        reference = data.get('reference')
+
 
         if not reference:
             return jsonify({'error': 'reference is missing'}), 400
 
         payment = payment_repository.update_status_by_reference(
             provider_reference=reference,
-            status=data.get('status', 'pending').lower(),
+            status=status,
         )
         if not payment:
             return jsonify({'error': 'Payment not found'}), 404
