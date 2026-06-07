@@ -13,3 +13,4 @@ pandas
 openpyxl
 loguru
 logtail-python
+gunicorn
