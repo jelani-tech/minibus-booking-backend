@@ -2,6 +2,8 @@ from tests.base import BackendApiTestCase
 
 
 TEST_CUSTOMER_ID = "88888888-8888-8888-8888-888888888888"
+TEST_AUTH_USER_ID = "99999999-9999-9999-9999-999999999999"
+TEST_PASSWORD_HASH = "$2b$12$.MFBQ8RIgpwJyWHscoQ5vuFJ7Dgcaf36QbfbXeRbuInB9yhoGQtrW"
 
 
 class BookingPaymentRoutesTest(BackendApiTestCase):
@@ -35,6 +37,38 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
                         capacity_available = capacity_total - capacity_blocked
                     """
                 )
+            )
+            db.session.execute(
+                db.text(
+                    """
+                    insert into auth.users (id, phone, encrypted_password)
+                    values (
+                        cast(:auth_user_id as uuid),
+                        :phone,
+                        :encrypted_password
+                    )
+                    on conflict (phone) do update
+                    set encrypted_password = excluded.encrypted_password
+                    """
+                ),
+                {
+                    "auth_user_id": TEST_AUTH_USER_ID,
+                    "phone": "+2250100000003",
+                    "encrypted_password": TEST_PASSWORD_HASH,
+                },
+            )
+            db.session.execute(
+                db.text(
+                    """
+                    update public.customers
+                    set auth_user_id = cast(:auth_user_id as uuid)
+                    where id = cast(:customer_id as uuid)
+                    """
+                ),
+                {
+                    "auth_user_id": TEST_AUTH_USER_ID,
+                    "customer_id": TEST_CUSTOMER_ID,
+                },
             )
             db.session.commit()
 

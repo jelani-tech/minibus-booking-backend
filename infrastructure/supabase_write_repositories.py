@@ -73,6 +73,85 @@ class SupabaseAuthRepository:
         )
         return dict(row) if row else None
 
+    def create_password_reset(self, *, phone: str, email: str, otp_code: str, expires_at: Any) -> dict[str, Any]:
+        """Crée une entrée d'OTP de réinitialisation dans la table auth.password_resets."""
+        import uuid
+        from datetime import datetime, timezone
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    insert into auth.password_resets (id, phone, email, otp_code, expires_at, used, created_at)
+                    values (cast(:id as uuid), :phone, :email, :otp_code, :expires_at, false, :created_at)
+                    returning *
+                    """
+                ),
+                {
+                    "id": str(uuid.uuid4()),
+                    "phone": phone,
+                    "email": email,
+                    "otp_code": otp_code,
+                    "expires_at": expires_at,
+                    "created_at": datetime.now(timezone.utc),
+                },
+            )
+            .mappings()
+            .one()
+        )
+        return dict(row)
+
+    def find_active_otp(self, *, phone: str, otp_code: str) -> dict[str, Any] | None:
+        """Trouve un OTP de réinitialisation actif (non expiré et non utilisé) pour un téléphone."""
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    select *
+                    from auth.password_resets
+                    where phone = :phone
+                      and otp_code = :otp_code
+                      and used = false
+                      and expires_at > timezone('utc', now())
+                    order by created_at desc
+                    limit 1
+                    """
+                ),
+                {"phone": phone, "otp_code": otp_code},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    def mark_otp_as_used(self, reset_id: Any) -> None:
+        """Marque un OTP comme utilisé."""
+        db.session.execute(
+            text(
+                """
+                update auth.password_resets
+                set used = true
+                where id = cast(:id as uuid)
+                """
+            ),
+            {"id": str(reset_id)},
+        )
+
+    def update_password(self, *, phone: str, password: str) -> bool:
+        """Met à jour le mot de passe d'un utilisateur dans auth.users."""
+        encrypted = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        result = db.session.execute(
+            text(
+                """
+                update auth.users
+                set encrypted_password = :encrypted_password,
+                    updated_at = timezone('utc', now())
+                where phone = :phone
+                """
+            ),
+            {"phone": phone, "encrypted_password": encrypted},
+        )
+        return result.rowcount > 0
+
 
 BOOKING_DETAILS_SQL = """
 select

@@ -19,6 +19,7 @@ from logger import setup_logging
 import models.clients
 import models.partners
 import models.vehicles
+import models.auth
 
 
 def create_app():
@@ -90,7 +91,7 @@ def create_app():
     def log_request(response):
         from flask import request
         logger.info(
-            f"{request.method} {request.path} → {response.status_code}"
+            f"{request.method} {request.path} -> {response.status_code}"
         )
         return response
 

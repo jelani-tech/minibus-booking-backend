@@ -1,74 +1,52 @@
-# Minibus Booking Backend API
+# JELANI - Backend Flask
 
-Backend API pour l'application de réservation de minibus en Côte d'Ivoire.
+API backend de l'application JELANI, utilisee par l'application mobile Flutter `../minibus-booking-mobile`. Le backend expose les donnees de lignes, trajets, reservations, authentification client et paiements.
 
-## Technologies
+## Etat actuel
+
+- API Flask exposee sur `http://localhost:8000`.
+- Authentification JWT pour les clients mobiles.
+- Inscription et connexion par numero de telephone.
+- Reinitialisation de mot de passe par OTP e-mail via Brevo.
+- Lecture des lignes, arrets et trajets via repositories alignes sur le schema Supabase.
+- Creation, consultation et annulation de reservations.
+- Consultation publique d'un ticket par reference.
+- Paiement Paystack avec mode mock automatique en developpement.
+- Services legacy Wave, Orange Money et MTN encore presents dans `services/`, mais le flux actif utilise Paystack.
+- Docker local disponible pour lancer le backend et une base PostgreSQL miroir.
+
+## Prerequis
 
 - Python 3.9+
-- Flask 2.3.3
-- PostgreSQL
-- Flask-JWT-Extended pour l'authentification
-- Intégration des paiements Mobile Money (Wave, Orange Money, MTN)
+- PostgreSQL ou Docker
+- pip / virtualenv
+- Optionnel: Docker Compose pour l'environnement local recommande
 
-## Installation
-
-1. Créer un environnement virtuel:
+## Installation locale sans Docker
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate  # Sur Windows: venv\Scripts\activate
-```
-
-1. Installer les dépendances:
-
-```bash
+python -m venv venv
+venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-1. Configurer les variables d'environnement:
-
-```bash
-cp .env.example .env
-# Éditer .env avec vos valeurs
-```
-
-1. Créer la base de données PostgreSQL:
-
-```sql
-CREATE DATABASE minibus_db;
-```
-
-1. **(Première fois uniquement)** Initialiser Flask-Migrate et créer la migration initiale:
-
-```bash
-export FLASK_APP=app:create_app
-flask db init
-flask db migrate -m "Initial"
-```
-
-Les migrations seront ensuite appliquées automatiquement à chaque démarrage de l'app.
-
-**Si la base existait déjà** (erreur « relation already exists » ou « Target database is not up to date »), aligner Alembic sur l’état actuel sans réexécuter les créations de tables :
-
-```bash
-flask db stamp head
-```
-
-Ensuite vous pouvez créer de nouvelles migrations (`flask db migrate -m "..."`) et les appliquer au démarrage.
-
-1. Lancer l'application:
-
-```bash
+copy .env.example .env
 python app.py
 ```
 
-## Developpement local avec la base miroir Supabase
+Sur macOS/Linux:
 
-En developpement, utilisez la base PostgreSQL locale definie par
-`docker-compose.local.yml`. Elle evite de toucher a Supabase et reprend le
-schema applicatif cible.
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+python app.py
+```
 
-### Option recommandee: backend et base dans Docker
+Le serveur ecoute sur `http://localhost:8000`.
+
+## Developpement recommande avec Docker
+
+Backend + base locale:
 
 ```powershell
 .\scripts\dev.ps1
@@ -80,114 +58,185 @@ Equivalent manuel:
 docker compose -f docker-compose.local.yml up -d postgres backend
 ```
 
-Le backend sera disponible sur `http://localhost:8000`.
-
-### Option alternative: backend local, base dans Docker
-
-Demarrez seulement la base:
+Base locale uniquement, backend lance dans le terminal:
 
 ```powershell
 .\scripts\dev-db.ps1
-```
-
-Copiez ensuite le fichier d'environnement de developpement:
-
-```powershell
 Copy-Item .env.development.example .env.development
 $env:APP_ENV = "development"
 python app.py
 ```
 
-`config.py` charge automatiquement `.env.development` quand `APP_ENV=development`.
-La variable importante est:
+`config.py` charge `.env.development` quand `APP_ENV=development`.
+
+## Configuration
+
+Variables principales:
 
 ```text
+APP_ENV=development
+SECRET_KEY=...
+JWT_SECRET_KEY=...
 DATABASE_URL=postgresql://user:password@localhost:5432/minibus_db
+PAYSTACK_SECRET_KEY=...
+PAYSTACK_URL=...
+BREVO_API_KEY=...
+BREVO_SENDER_NAME=Jelani
+BREVO_SENDER_EMAIL=noreply@jelani.tech
+LOG_LEVEL=INFO
+LOGTAIL_TOKEN=
 ```
 
-La base locale initialise les tables `public.partners`, `vehicles`, `drivers`,
-`lines`, `stops`, `line_stops`, `trips`, `customers`, `bookings`, `payments`,
-les enums, vues et triggers principaux.
+En developpement, le paiement est mocke si `APP_ENV=development` ou si Flask est en debug.
 
-`init_db` reste utile pour attacher SQLAlchemy a Flask, mais ne cree plus de
-schemas ni n'applique les migrations automatiquement en developpement. Les
-migrations Alembic legacy sont opt-in uniquement:
+Les variables Wave, Orange Money et MTN restent dans `.env.example` pour compatibilite avec les services legacy.
+
+## Structure
+
+```text
+minibus-booking-backend/
+|-- app.py                         # Factory Flask, blueprints, healthcheck
+|-- config.py                      # Chargement env et configuration Flask
+|-- database.py                    # Initialisation SQLAlchemy
+|-- application/                   # Serializers API
+|-- domain/                        # Entites et contrats repositories
+|-- infrastructure/                # Repositories Supabase/read-write
+|-- models/                        # Modeles SQLAlchemy par schema
+|-- routes/                        # Blueprints REST
+|-- services/                      # Paiement, import lignes, e-mail
+|-- tests/                         # Tests API
+|-- migrations/                    # Migrations Alembic legacy
+|-- Dockerfile
+`-- requirements.txt
+```
+
+## Routes API
+
+### Sante
+
+- `GET /`
+- `GET /health`
+
+### Authentification
+
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `GET /api/auth/me` avec JWT
+- `POST /api/auth/reset-password/request`
+- `POST /api/auth/reset-password/reset`
+
+### Lignes
+
+- `GET /api/lines/`
+- `GET /api/lines/<line_id>`
+- `GET /api/lines/<line_id>/stops`
+
+### Trajets
+
+- `GET /api/trips`
+- `GET /api/trips/<trip_id>`
+- `POST /api/trips` avec JWT admin
+
+Filtres supportes sur `GET /api/trips`:
+
+- `departure_city`
+- `arrival_city`
+- `date` au format `YYYY-MM-DD`
+
+### Reservations
+
+- `POST /api/bookings` avec JWT
+- `GET /api/bookings` avec JWT
+- `GET /api/bookings/<booking_id>` avec JWT
+- `GET /api/bookings/ticket/<ticket_reference>`
+- `DELETE /api/bookings/<booking_id>` avec JWT
+
+### Paiements
+
+- `POST /api/payments/initiate` avec JWT
+- `POST /api/payments/webhook`
+- `GET /api/payments/status/<booking_id>` avec JWT
+
+### Vehicules
+
+- `GET /api/vehicles` avec JWT admin
+- `GET /api/vehicles/available` avec JWT
+- `POST /api/vehicles` avec JWT admin
+- `PUT /api/vehicles/<vehicle_id>` avec JWT admin
+
+## Exemples rapides
+
+Connexion:
 
 ```bash
-AUTO_UPGRADE_DB=true LEGACY_SCHEMA_BOOTSTRAP=true python app.py
+curl -X POST http://localhost:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"phone\":\"+2250102030405\",\"password\":\"secret123\"}"
 ```
 
-Pour lancer les tests de lecture contre la base locale:
+Recherche de trajets:
+
+```bash
+curl "http://localhost:8000/api/trips?departure_city=Abidjan&arrival_city=Yamoussoukro&date=2026-06-13"
+```
+
+Creation d'une reservation:
+
+```bash
+curl -X POST http://localhost:8000/api/bookings \
+  -H "Authorization: Bearer <JWT>" \
+  -H "Content-Type: application/json" \
+  -d "{\"trip_id\":\"<UUID>\",\"number_of_seats\":2,\"passenger_name\":\"Jean Dupont\",\"passenger_phone\":\"+2250102030405\"}"
+```
+
+Initialisation du paiement:
+
+```bash
+curl -X POST http://localhost:8000/api/payments/initiate \
+  -H "Authorization: Bearer <JWT>" \
+  -H "Content-Type: application/json" \
+  -d "{\"booking_id\":\"<UUID>\",\"payment_email\":\"client@example.com\"}"
+```
+
+## Tests
+
+```bash
+pytest
+```
+
+Avec l'environnement local Docker:
 
 ```powershell
 .\scripts\test-local.ps1
 ```
 
-## Structure du projet
+## Migrations et schema
 
-```text
-minibus-booking-backend/
-├── app.py                 # Point d'entrée de l'application
-├── config.py              # Configuration
-├── database.py            # Initialisation de la base de données
-├── models.py              # Modèles SQLAlchemy
-├── requirements.txt       # Dépendances Python
-├── routes/
-│   ├── auth.py           # Routes d'authentification
-│   ├── trip.py           # Routes des trajets
-│   ├── booking.py        # Routes de réservation
-│   └── payment.py        # Routes de paiement
-└── services/
-    ├── wave_payment.py   # Service Wave
-    ├── orange_money.py   # Service Orange Money
-    └── mtn_momo.py       # Service MTN Mobile Money
-```
-
-## Endpoints API
-
-### Authentification
-
-- `POST /api/auth/register` - Inscription
-- `POST /api/auth/login` - Connexion
-- `GET /api/auth/me` - Informations utilisateur (requiert JWT)
-
-### Trajets
-
-- `GET /api/trips` - Liste des trajets (filtres: departure_city, arrival_city, date)
-- `GET /api/trips/<id>` - Détails d'un trajet
-- `POST /api/trips` - Créer un trajet (requiert JWT)
-
-### Réservations
-
-- `POST /api/bookings` - Créer une réservation (requiert JWT)
-- `GET /api/bookings` - Liste des réservations de l'utilisateur (requiert JWT)
-- `GET /api/bookings/<id>` - Détails d'une réservation (requiert JWT)
-- `DELETE /api/bookings/<id>` - Annuler une réservation (requiert JWT)
-
-### Paiements
-
-- `POST /api/payments/initiate` - Initier un paiement (requiert JWT)
-- `POST /api/payments/webhook` - Webhook pour les notifications de paiement
-- `GET /api/payments/status/<booking_id>` - Statut du paiement (requiert JWT)
-
-## Déploiement
-
-### Backend
-
-1. Installer les dépendances système:
+Le developpement local s'appuie sur la base miroir definie par `docker-compose.local.yml`. Les migrations Alembic legacy sont opt-in:
 
 ```bash
-sudo apt-get update
-sudo apt-get install python3-pip python3-venv postgresql
+AUTO_UPGRADE_DB=true LEGACY_SCHEMA_BOOTSTRAP=true python app.py
 ```
 
-1. Configurer PostgreSQL et créer la base de données
-
-1. Utiliser Gunicorn pour la production:
+Si une base existante est deja alignee mais qu'Alembic n'a pas l'historique:
 
 ```bash
-pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5000 app:app
+flask db stamp head
 ```
 
-1. Configurer Nginx comme reverse proxy (optionnel)
+## Deploiement
+
+Exemple Gunicorn:
+
+```bash
+gunicorn -w 4 -b 0.0.0.0:8000 "app:create_app()"
+```
+
+Prevoir en production:
+
+- `APP_ENV=production`
+- secrets forts pour Flask et JWT
+- base PostgreSQL geree ou securisee
+- configuration Paystack reelle
+- webhook paiement expose en HTTPS
+- logs applicatifs et supervision

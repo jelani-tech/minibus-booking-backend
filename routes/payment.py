@@ -28,7 +28,7 @@ def is_mock_payment_enabled() -> bool:
 def initiate_payment():
     data = request.get_json() or {}
     customer_id = get_jwt_identity()
-    booking_id = data['booking_id']
+    booking_id = data.get('booking_id')
     log_context = {'customer_id':customer_id, 'booking_id':booking_id}
     logger.info(f"Initiating payment : {log_context}")
 
@@ -50,12 +50,27 @@ def initiate_payment():
 
         provider_reference = f"JELANI-{uuid4()}"
 
-        service = PaystackService()
-
-        payment_response = service.initialize_payment(
-            amount=float(booking['total_price']) * 100,
-            email=data['payment_email'],
+        payment_email = (
+            data.get('payment_email')
+            or data.get('email')
+            or booking.get('customer_email')
+            or 'email@email.com'
         )
+
+        if is_mock_payment_enabled():
+            payment_response = {
+                'authorization_url': f"https://paystack.test/checkout/{provider_reference}",
+                'access_code': f"mock-{provider_reference}",
+                'reference': provider_reference,
+                'status': 'pending',
+                'email': payment_email,
+            }
+        else:
+            service = PaystackService()
+            payment_response = service.initialize_payment(
+                amount=float(booking['total_price']) * 100,
+                email=payment_email,
+            )
         provider_reference = payment_response.get('reference') or provider_reference
         payment_url = payment_response.get('authorization_url')
 

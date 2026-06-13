@@ -33,6 +33,9 @@ services:
       - APP_ENV=development
       - AUTO_UPGRADE_DB=false
       - LEGACY_SCHEMA_BOOTSTRAP=false
+      - BREVO_API_KEY=
+      - BREVO_SENDER_NAME=Jelani
+      - BREVO_SENDER_EMAIL=noreply@jelani.tech
     depends_on:
       postgres:
         condition: service_healthy

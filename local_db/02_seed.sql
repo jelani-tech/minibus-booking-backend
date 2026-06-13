@@ -102,9 +102,17 @@ insert into trips (
     5000
 );
 
-insert into customers (id, first_name, last_name, phone, whatsapp_phone, email)
+insert into auth.users (id, phone, encrypted_password)
+values (
+    '99999999-9999-9999-9999-999999999999',
+    '+2250100000003',
+    '$2b$12$.MFBQ8RIgpwJyWHscoQ5vuFJ7Dgcaf36QbfbXeRbuInB9yhoGQtrW'
+);
+
+insert into customers (id, auth_user_id, first_name, last_name, phone, whatsapp_phone, email)
 values (
     '88888888-8888-8888-8888-888888888888',
+    '99999999-9999-9999-9999-999999999999',
     'Jean',
     'Client',
     '+2250100000003',

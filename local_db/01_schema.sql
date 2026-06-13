@@ -15,6 +15,20 @@ create table auth.users (
     updated_at       timestamptz not null default timezone('utc', now())
 );
 
+create table auth.password_resets (
+    id uuid primary key default gen_random_uuid(),
+    phone text not null,
+    email text not null,
+    otp_code text not null,
+    expires_at timestamptz not null,
+    used boolean not null default false,
+    created_at timestamptz not null default timezone('utc', now())
+);
+
+create index password_resets_phone_idx on auth.password_resets (phone);
+create index password_resets_email_idx on auth.password_resets (lower(email));
+create index password_resets_expires_at_idx on auth.password_resets (expires_at);
+
 create type partner_status as enum ('pending', 'active', 'inactive');
 create type vehicle_energy_type as enum ('diesel', 'essence', 'electric', 'hybrid');
 create type vehicle_status as enum ('available', 'assigned', 'maintenance', 'inactive');
