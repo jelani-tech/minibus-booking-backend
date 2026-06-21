@@ -1,5 +1,4 @@
-import logging
-from uuid import uuid4
+
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
@@ -48,30 +47,15 @@ def initiate_payment():
         if existing_payment and existing_payment['status'] in ('paid', 'completed'):
             return jsonify({'error': 'Payment already completed'}), 400
 
-        provider_reference = f"JELANI-{uuid4()}"
 
-        payment_email = (
-            data.get('payment_email')
-            or data.get('email')
-            or booking.get('customer_email')
-            or 'email@email.com'
+        payment_email = booking.get('customer_email')  or data.get('payment_email')
+
+        service = PaystackService()
+        payment_response = service.initialize_payment(
+            amount=float(booking['total_price']) * 100,
+            email=payment_email,
         )
-
-        if is_mock_payment_enabled():
-            payment_response = {
-                'authorization_url': f"https://paystack.test/checkout/{provider_reference}",
-                'access_code': f"mock-{provider_reference}",
-                'reference': provider_reference,
-                'status': 'pending',
-                'email': payment_email,
-            }
-        else:
-            service = PaystackService()
-            payment_response = service.initialize_payment(
-                amount=float(booking['total_price']) * 100,
-                email=payment_email,
-            )
-        provider_reference = payment_response.get('reference') or provider_reference
+        provider_reference = payment_response.get('reference')
         payment_url = payment_response.get('authorization_url')
 
         payment = payment_repository.create_or_update(
