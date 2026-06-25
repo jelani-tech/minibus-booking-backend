@@ -1,0 +1,27 @@
+meta {
+  name: Get Trips by Line Code
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/trips/by-line/:line_code
+  body: none
+  auth: none
+}
+
+params:path {
+  line_code: DKR-TBK
+}
+
+headers {
+  Content-Type: application/json
+}
+
+docs {
+  # Get Trips by Line Code
+
+  Récupère tous les trajets avec le statut `scheduled` pour une ligne donnée par son code.
+
+  - **line_code** : code de la ligne (insensible à la casse), ex: `DKR-TBK`
+}

@@ -29,6 +29,9 @@ class TripRepository(Protocol):
     def get(self, trip_id: UUID) -> Trip | None:
         ...
 
+    def get_by_line_code(self, line_code: str) -> list[Trip]:
+        ...
+
 
 class CustomerRepository(Protocol):
     def find_by_phone(self, phone: str) -> Customer | None:

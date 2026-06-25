@@ -201,3 +201,35 @@ class SupabaseTripRepository:
     def get_domain(self, trip_id: UUID):
         row = self.get(trip_id)
         return trip_from_row(row) if row else None
+
+    def get_by_line_code(self, line_code: str) -> list[dict[str, Any]]:
+        rows = db.session.execute(
+            text(
+                """
+                select
+                    t.*,
+                    l.code as line_code,
+                    l.name as line_name,
+                    l.origin_name,
+                    l.destination_name,
+                    p.name as partner_name,
+                    v.vehicle_code,
+                    v.plate_number,
+                    v.brand,
+                    v.model,
+                    d.first_name as driver_first_name,
+                    d.last_name as driver_last_name,
+                    d.phone as driver_phone
+                from public.trips t
+                join public.lines l on l.id = t.line_id
+                join public.partners p on p.id = t.partner_id
+                join public.vehicles v on v.id = t.vehicle_id
+                left join public.drivers d on d.id = t.driver_id
+                where upper(l.code) = upper(:line_code)
+                  and t.status = 'scheduled'
+                order by t.planned_start_datetime
+                """
+            ),
+            {"line_code": line_code},
+        ).mappings()
+        return [dict(row) for row in rows]

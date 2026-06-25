@@ -38,6 +38,15 @@ def get_trips():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@trip_bp.route('/by-line/<string:line_code>', methods=['GET'])
+def get_trips_by_line_code(line_code):
+    try:
+        trips = trip_repository.get_by_line_code(line_code)
+        return jsonify({'trips': [trip_row_to_api(trip) for trip in trips]}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @trip_bp.route('/<uuid:trip_id>', methods=['GET'])
 def get_trip(trip_id):
     try:
