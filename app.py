@@ -62,11 +62,11 @@ def create_app():
             if os.path.isdir(migrate_dir):
                 try:
                     upgrade()
-                    print("Migrations applied successfully")
+                    logger.info("Migrations applied successfully")
                 except Exception as e:
-                    print(f"Migration warning: {e}")
+                    logger.warning(f"Migration warning: {e}")
             else:
-                print("Dossier 'migrations' absent. Première fois : flask db init puis flask db migrate -m 'Initial'")
+                logger.warning("Dossier 'migrations' absent. Première fois : flask db init puis flask db migrate -m 'Initial'")
 
     # Register blueprints
     app.register_blueprint(auth_bp)

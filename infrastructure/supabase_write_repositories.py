@@ -20,19 +20,19 @@ class SupabaseAuthRepository:
     Le profil métier est dans public.customers (lié via auth_user_id).
     """
 
-    def create(self, *, phone: str, password: str) -> dict[str, Any]:
+    def create(self, * ,user_id:str, phone: str, password: str) -> dict[str, Any]:
         """Crée un utilisateur dans auth.users avec le mot de passe hashé."""
         encrypted = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         row = (
             db.session.execute(
                 text(
                     """
-                    insert into auth.users (phone, encrypted_password)
-                    values (:phone, :encrypted_password)
+                    insert into auth.users (id, phone, encrypted_password)
+                    values (:id, :phone, :encrypted_password)
                     returning *
                     """
                 ),
-                {"phone": phone, "encrypted_password": encrypted},
+                {"id": user_id,"phone": phone, "encrypted_password": encrypted},
             )
             .mappings()
             .one()

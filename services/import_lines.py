@@ -1,5 +1,6 @@
 import pandas as pd
 import uuid
+from loguru import logger
 from models.public import db, Station
 from models.public import Line, Stop
 
@@ -73,21 +74,21 @@ def parse_coordinates(coord_str):
             return lat, lon
             
     except Exception as e:
-        print(f"Error parsing coordinates '{coord_str}': {e}")
+        logger.warning(f"Error parsing coordinates '{coord_str}': {e}")
         return None, None
-        
+
     return None, None
 
 def import_lines_from_excel(file_path='lines.xlsx'):
-    print(f"Starting import from {file_path}...")
+    logger.info(f"Starting lines import from {file_path}...")
     try:
         xl = pd.ExcelFile(file_path)
     except FileNotFoundError:
-        print(f"File {file_path} not found. Skipping import.")
+        logger.error(f"File {file_path} not found. Skipping import.")
         return
 
     for sheet_name in xl.sheet_names:
-        print(f"Processing line: {sheet_name}")
+        logger.info(f"Processing line: {sheet_name}")
         
         # Check if line exists, if not create
         line = Line.query.filter_by(name=sheet_name).first()
@@ -131,9 +132,9 @@ def import_lines_from_excel(file_path='lines.xlsx'):
             
         try:
             db.session.commit()
-            print(f"Successfully imported line: {sheet_name}")
+            logger.info(f"Successfully imported line: {sheet_name}")
         except Exception as e:
             db.session.rollback()
-            print(f"Error saving line {sheet_name}: {e}")
+            logger.exception(f"Error saving line {sheet_name}: {e}")
 
-    print("Import completed.")
+    logger.info("Lines import completed.")

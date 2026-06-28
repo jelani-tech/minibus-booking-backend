@@ -33,18 +33,28 @@ def initiate_payment():
 
     try:
         if not booking_id:
+            logger.warning(f"Payment initiation rejected: booking_id missing (customer_id={customer_id})")
             return jsonify({'error': 'booking_id is required'}), 400
 
         booking = booking_repository.get(booking_id)
         if not booking:
+            logger.warning(f"Payment initiation rejected: booking not found ({log_context})")
             return jsonify({'error': 'Booking not found'}), 404
         if str(booking['customer_id']) != str(customer_id):
+            logger.warning(
+                f"Payment initiation denied: customer_id={customer_id} does not own booking_id={booking_id}"
+            )
             return jsonify({'error': 'Unauthorized'}), 403
         if booking['booking_status'] != 'pending':
+            logger.warning(
+                f"Payment initiation rejected: booking_id={booking_id} status is "
+                f"'{booking['booking_status']}', not 'pending'"
+            )
             return jsonify({'error': 'Booking is not pending payment'}), 400
 
         existing_payment = payment_repository.get_for_booking(booking_id)
         if existing_payment and existing_payment['status'] in ('paid', 'completed'):
+            logger.warning(f"Payment initiation rejected: payment already completed ({log_context})")
             return jsonify({'error': 'Payment already completed'}), 400
 
 
@@ -92,6 +102,7 @@ def payment_webhook():
     logger.info(f"Payment webhook received : {reference, status}")
     try:
         if not reference:
+            logger.warning("Payment webhook rejected: reference is missing")
             return jsonify({'error': 'reference is missing'}), 400
 
         payment = payment_repository.update_status_by_reference(
@@ -99,36 +110,49 @@ def payment_webhook():
             status=status,
         )
         if not payment:
+            logger.warning(f"Payment webhook: no payment found for reference {reference}")
             return jsonify({'error': 'Payment not found'}), 404
 
         db.session.commit()
+
+        logger.info(
+            f"Payment webhook processed: reference={reference}, status='{status}', "
+            f"booking_id={payment.get('booking_id')}"
+        )
 
         return jsonify({'message': 'Webhook processed successfully'}), 200
 
     except Exception as e:
         db.session.rollback()
+        logger.exception(f"Error processing payment webhook (reference={reference}): {e}")
         return jsonify({'error': str(e)}), 500
 
 
 @payment_bp.route('/status/<uuid:booking_id>', methods=['GET'])
 @jwt_required()
 def get_payment_status(booking_id):
+    customer_id = get_jwt_identity()
     try:
-        customer_id = get_jwt_identity()
         booking = booking_repository.get(booking_id)
 
         if not booking:
+            logger.warning(f"Payment status check: booking_id={booking_id} not found")
             return jsonify({'error': 'Booking not found'}), 404
         if str(booking['customer_id']) != str(customer_id):
+            logger.warning(
+                f"Payment status check denied: customer_id={customer_id} does not own booking_id={booking_id}"
+            )
             return jsonify({'error': 'Unauthorized'}), 403
 
         payment = payment_repository.get_for_booking(booking_id)
 
         if not payment:
+            logger.warning(f"Payment status check: no payment found for booking_id={booking_id}")
             return jsonify({'error': 'Payment not found'}), 404
 
         return jsonify({'payment': payment_row_to_api(payment)}), 200
 
     except Exception as e:
+        logger.exception(f"Error fetching payment status for booking_id={booking_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
