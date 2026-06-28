@@ -91,8 +91,6 @@ def payment_webhook():
     status = data.get('status','pending').lower()
     logger.info(f"Payment webhook received : {reference, status}")
     try:
-
-
         if not reference:
             return jsonify({'error': 'reference is missing'}), 400
 

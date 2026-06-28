@@ -338,8 +338,8 @@ class SupabaseBookingRepository:
         customer_id: UUID | str,
         trip_id: UUID | str,
         seats_reserved: int,
-        passenger_name: str,
-        passenger_phone: str,
+        pickup_stop_id: UUID | str,
+        dropoff_stop_id: UUID | str,
     ) -> dict[str, Any]:
         trip = (
             db.session.execute(
@@ -378,6 +378,8 @@ class SupabaseBookingRepository:
                         payment_status,
                         booking_status,
                         booking_channel,
+                        pickup_stop_id,
+                        dropoff_stop_id,
                         external_reference,
                         notes
                     )
@@ -390,6 +392,8 @@ class SupabaseBookingRepository:
                         'pending',
                         'pending',
                         'app',
+                        :pickup_stop_id,
+                        :dropoff_stop_id,
                         :external_reference,
                         :notes
                     )
@@ -403,7 +407,9 @@ class SupabaseBookingRepository:
                     "unit_price": unit_price,
                     "total_price": unit_price * seats_reserved,
                     "external_reference": ticket_reference,
-                    "notes": f"Passenger: {passenger_name} ({passenger_phone})",
+                    "pickup_stop_id": str(pickup_stop_id),
+                    "dropoff_stop_id": str(dropoff_stop_id),
+                    "notes": "Payment canal: app"
                 },
             )
             .mappings()

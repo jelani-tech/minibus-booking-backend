@@ -20,22 +20,18 @@ def create_booking():
         customer_id = get_jwt_identity()
         data = request.get_json() or {}
 
-        required_fields = ['trip_id', 'number_of_seats', 'passenger_name', 'passenger_phone']
+        required_fields = ['trip_id', 'number_of_seats', 'pickup_stop_id', 'dropoff_stop_id']
         for field in required_fields:
             if not data.get(field):
                 return jsonify({'error': f'{field} is required'}), 400
 
-        customer_repository.create_or_update(
-            name=data['passenger_name'],
-            phone=data['passenger_phone'],
-        )
 
         booking = booking_repository.create(
             customer_id=customer_id,
             trip_id=data['trip_id'],
             seats_reserved=int(data['number_of_seats']),
-            passenger_name=data['passenger_name'],
-            passenger_phone=data['passenger_phone'],
+            pickup_stop_id=data['pickup_stop_id'],
+            dropoff_stop_id=data['dropoff_stop_id'],
         )
         db.session.commit()
 
