@@ -38,4 +38,5 @@ class Config:
 
     PAYSTACK_SECRET_KEY = os.environ.get('PAYSTACK_SECRET_KEY') or ''
     PAYSTACK_URL = os.environ.get('PAYSTACK_URL') or ''
+    PAYMENT_EMAIL_DOMAIN = os.environ.get('PAYMENT_EMAIL_DOMAIN') or 'jelani.tech'
 

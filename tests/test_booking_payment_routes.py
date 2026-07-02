@@ -1,3 +1,6 @@
+from unittest.mock import patch
+from uuid import uuid4
+
 from tests.base import BackendApiTestCase
 
 
@@ -61,7 +64,8 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
                 db.text(
                     """
                     update public.customers
-                    set auth_user_id = cast(:auth_user_id as uuid)
+                    set auth_user_id = cast(:auth_user_id as uuid),
+                        email = null
                     where id = cast(:customer_id as uuid)
                     """
                 ),
@@ -164,27 +168,50 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["booking"]["id"], booking["id"])
 
-    def test_initiate_mock_payment(self):
-        headers = self.auth_headers()
-        create_response = self.client.post(
-            "/api/bookings",
-            headers=headers,
-            json={
-                "trip_id": self.first_trip_id(),
-                "number_of_seats": 1,
-                "passenger_name": "Jean Client",
-                "passenger_phone": "+2250100000003",
-            },
-        )
-        booking_id = create_response.get_json()["booking"]["id"]
+    def set_customer_email(self, email):
+        from models.public import db
 
-        response = self.client.post(
-            "/api/payments/initiate",
-            headers=headers,
-            json={
+        with self.app.app_context():
+            db.session.execute(
+                db.text(
+                    """
+                    update public.customers
+                    set email = :email
+                    where id = cast(:customer_id as uuid)
+                    """
+                ),
+                {"email": email, "customer_id": TEST_CUSTOMER_ID},
+            )
+            db.session.commit()
+
+    def initiate_payment(self, headers, payload):
+        with patch("routes.payment.PaystackService") as mock_service:
+            mock_service.return_value.initialize_payment.return_value = {
+                "authorization_url": "https://paystack.local/redirect",
+                "access_code": "access-code",
+                "reference": f"ref-{uuid4()}",
+                "status": "pending",
+            }
+            response = self.client.post(
+                "/api/payments/initiate",
+                headers=headers,
+                json=payload,
+            )
+        return response, mock_service.return_value.initialize_payment
+
+    def fallback_payment_email(self):
+        domain = self.app.config["PAYMENT_EMAIL_DOMAIN"]
+        return f"client-{TEST_CUSTOMER_ID}@{domain}"
+
+    def test_initiate_payment_with_provided_email(self):
+        headers = self.auth_headers()
+        booking_id = self.create_booking()[0]["id"]
+
+        response, mock_initialize = self.initiate_payment(
+            headers,
+            {
                 "booking_id": booking_id,
-                "payment_method": "wave",
-                "phone": "+2250100000003",
+                "payment_email": "client@example.com",
             },
         )
 
@@ -192,6 +219,61 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         payload = response.get_json()
         self.assertIn("transaction_id", payload)
         self.assertEqual(payload["payment"]["booking_id"], booking_id)
+        self.assertEqual(
+            mock_initialize.call_args.kwargs["email"], "client@example.com"
+        )
+
+    def test_initiate_payment_without_email_uses_account_email(self):
+        self.set_customer_email("jean.client@example.com")
+        headers = self.auth_headers()
+        booking_id = self.create_booking()[0]["id"]
+
+        response, mock_initialize = self.initiate_payment(
+            headers,
+            {"booking_id": booking_id},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            mock_initialize.call_args.kwargs["email"], "jean.client@example.com"
+        )
+
+    def test_initiate_payment_without_any_email_generates_stable_address(self):
+        headers = self.auth_headers()
+        booking_id = self.create_booking()[0]["id"]
+
+        first_response, first_initialize = self.initiate_payment(
+            headers,
+            {"booking_id": booking_id},
+        )
+        second_response, second_initialize = self.initiate_payment(
+            headers,
+            {"booking_id": booking_id},
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        first_email = first_initialize.call_args.kwargs["email"]
+        second_email = second_initialize.call_args.kwargs["email"]
+        self.assertEqual(first_email, self.fallback_payment_email())
+        self.assertEqual(first_email, second_email)
+
+    def test_initiate_payment_ignores_placeholder_email(self):
+        headers = self.auth_headers()
+        booking_id = self.create_booking()[0]["id"]
+
+        response, mock_initialize = self.initiate_payment(
+            headers,
+            {
+                "booking_id": booking_id,
+                "payment_email": "email@email.com",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            mock_initialize.call_args.kwargs["email"], self.fallback_payment_email()
+        )
 
 
 if __name__ == "__main__":

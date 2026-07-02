@@ -1,5 +1,8 @@
 
 
+import re
+import unicodedata
+
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
@@ -20,6 +23,29 @@ payment_repository = SupabasePaymentRepository()
 
 def is_mock_payment_enabled() -> bool:
     return current_app.config.get("APP_ENV") == "development" or current_app.debug
+
+
+# Adresse factice envoyee par les anciennes versions de l'app mobile
+# quand l'utilisateur n'avait pas d'email : a ignorer.
+PLACEHOLDER_PAYMENT_EMAIL = 'email@email.com'
+
+
+def build_fallback_payment_email(customer_id) -> str:
+    """Adresse technique stable par utilisateur (un client Paystack unique par compte sans email)."""
+    local_part = unicodedata.normalize('NFKD', str(customer_id))
+    local_part = local_part.encode('ascii', 'ignore').decode('ascii').lower()
+    local_part = re.sub(r'[^a-z0-9._-]+', '-', local_part).strip('-.')
+    return f"client-{local_part}@{current_app.config['PAYMENT_EMAIL_DOMAIN']}"
+
+
+def resolve_payment_email(booking, requested_email, customer_id) -> str:
+    """Email transmis a Paystack : compte client, sinon payment_email de la requete, sinon adresse technique."""
+    account_email = booking.get('customer_email')
+    if account_email == PLACEHOLDER_PAYMENT_EMAIL:
+        account_email = None
+    if requested_email == PLACEHOLDER_PAYMENT_EMAIL:
+        requested_email = None
+    return account_email or requested_email or build_fallback_payment_email(customer_id)
 
 
 @payment_bp.route('/initiate', methods=['POST'])
@@ -58,7 +84,7 @@ def initiate_payment():
             return jsonify({'error': 'Payment already completed'}), 400
 
 
-        payment_email = booking.get('customer_email')  or data.get('payment_email')
+        payment_email = resolve_payment_email(booking, data.get('payment_email'), customer_id)
 
         service = PaystackService()
         payment_response = service.initialize_payment(

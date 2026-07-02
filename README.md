@@ -71,21 +71,7 @@ python app.py
 
 ## Configuration
 
-Variables principales:
-
-```text
-APP_ENV=development
-SECRET_KEY=...
-JWT_SECRET_KEY=...
-DATABASE_URL=postgresql://user:password@localhost:5432/minibus_db
-PAYSTACK_SECRET_KEY=...
-PAYSTACK_URL=...
-BREVO_API_KEY=...
-BREVO_SENDER_NAME=Jelani
-BREVO_SENDER_EMAIL=noreply@jelani.tech
-LOG_LEVEL=INFO
-LOGTAIL_TOKEN=
-```
+Les variables d'environnement sont listees dans `.env.example` (et `.env.development.example` pour le developpement local). Copier le fichier en `.env` et renseigner les valeurs; ne jamais commiter de vraies cles.
 
 En developpement, le paiement est mocke si `APP_ENV=development` ou si Flask est en debug.
 
