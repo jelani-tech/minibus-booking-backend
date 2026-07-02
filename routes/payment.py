@@ -97,6 +97,7 @@ def initiate_payment():
 @payment_bp.route('/webhook', methods=['POST'])
 def payment_webhook():
     data = request.get_json() or {}
+    data = data.get('data') or {}
     reference = data.get('reference')
     status = data.get('status','pending').lower()
     logger.info(f"Payment webhook received : {reference, status}")
@@ -110,7 +111,7 @@ def payment_webhook():
             status=status,
         )
         if not payment:
-            logger.warning(f"Payment webhook: no payment found for reference {reference}")
+            logger.exception(f"Payment webhook: no payment found for reference {reference}")
             return jsonify({'error': 'Payment not found'}), 404
 
         db.session.commit()
