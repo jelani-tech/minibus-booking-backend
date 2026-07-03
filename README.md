@@ -141,7 +141,43 @@ Filtres supportes sur `GET /api/trips`:
 
 - `POST /api/payments/initiate` avec JWT
 - `POST /api/payments/webhook`
+- `GET /api/payments/callback` (redirection navigateur apres le checkout Paystack)
 - `GET /api/payments/status/<booking_id>` avec JWT
+
+#### Webhook Paystack
+
+Le webhook est public mais authentifie par signature : HMAC-SHA512 du corps brut
+avec `PAYSTACK_SECRET_KEY`, compare au header `x-paystack-signature` (401 si
+absente ou invalide). Tout evenement signe recoit un 200, y compris une
+reference inconnue ou un doublon, sinon Paystack re-essaie en boucle.
+
+Pour tester en local : cle de test Paystack dans `PAYSTACK_SECRET_KEY`, tunnel
+type ngrok (`ngrok http 8000`) et URL `https://<tunnel>/api/payments/webhook` a
+renseigner dans le dashboard Paystack (environnement test).
+
+#### Callback Paystack
+
+La callback URL n'est pas passee a `POST /transaction/initialize` : elle se
+configure dans le dashboard Paystack (Settings > API Keys & Webhooks), pour
+chaque environnement :
+
+- Test : `https://<domaine-backend-test>/api/payments/callback`
+- Live : `https://<domaine-backend-prod>/api/payments/callback`
+
+Le chemin doit rester exactement `/api/payments/callback` : l'app mobile detecte
+la fin du checkout par ce suffixe, quel que soit le domaine.
+
+A la redirection, le backend ne fait pas confiance aux query params
+(`?trxref=...&reference=...`) : il confirme le resultat via l'API Verify de
+Paystack puis applique les memes regles que le webhook (idempotence, montant et
+devise verifies, un paiement en succes n'est jamais retrograde). Le webhook
+reste la source de verite quand la redirection n'aboutit pas (WebView fermee,
+coupure reseau) ; callback et webhook peuvent arriver dans n'importe quel ordre.
+
+Verification manuelle en mode test : lancer un paiement depuis l'app, payer avec
+une carte de test Paystack, verifier que la WebView est redirigee vers
+`/api/payments/callback` et que `GET /api/payments/status/<booking_id>` renvoie
+un statut final (`success`/`failed`) immediatement apres.
 
 ### Vehicules
 

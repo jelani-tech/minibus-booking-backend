@@ -1,5 +1,8 @@
 
 
+import hashlib
+import hmac
+import json
 import re
 import unicodedata
 
@@ -8,6 +11,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from application.api_serializers import payment_row_to_api
 from infrastructure.supabase_write_repositories import (
+    SETTLED_SUCCESS_STATUSES,
     SupabaseBookingRepository,
     SupabasePaymentRepository,
 )
@@ -19,6 +23,93 @@ from loguru import logger
 payment_bp = Blueprint('payment', __name__, url_prefix='/api/payments')
 booking_repository = SupabaseBookingRepository()
 payment_repository = SupabasePaymentRepository()
+
+
+# Statuts canoniques de payments.status, contrat avec l'app mobile
+# (comparaison en minuscules cote mobile).
+PAYMENT_STATUS_SUCCESS = 'success'
+PAYMENT_STATUS_FAILED = 'failed'
+PAYMENT_STATUS_PENDING = 'pending'
+
+# Statuts renvoyes par Paystack (webhook et Verify API).
+PROVIDER_SUCCESS_STATUSES = ('success',)
+PROVIDER_FAILURE_STATUSES = ('failed', 'abandoned')
+
+
+def settle_payment_from_provider(reference, provider_data, source):
+    """Applique un resultat Paystack (webhook ou Verify) au paiement et au booking.
+
+    Regles communes aux deux canaux, qui peuvent arriver dans n'importe quel ordre :
+    - idempotent : une livraison en double ne change rien apres le premier traitement ;
+    - un paiement deja en succes n'est jamais retrograde ;
+    - le montant et la devise sont verifies avant de confirmer (Paystack exprime
+      le montant en sous-unite, cf. le x100 fait a l'initiate) ;
+    - paiement + booking mis a jour dans une meme transaction DB.
+
+    Retourne le statut final du paiement, ou None si la reference est inconnue.
+    """
+    payment = payment_repository.get_by_reference(reference, for_update=True)
+    if not payment:
+        logger.warning(
+            f"Payment settlement ({source}): unknown reference '{reference}', nothing to update"
+        )
+        return None
+
+    provider_status = (provider_data.get('status') or '').lower()
+    if provider_status in PROVIDER_SUCCESS_STATUSES:
+        target_status = PAYMENT_STATUS_SUCCESS
+    elif provider_status in PROVIDER_FAILURE_STATUSES:
+        target_status = PAYMENT_STATUS_FAILED
+    else:
+        logger.info(
+            f"Payment settlement ({source}): non-final provider status '{provider_status}' "
+            f"for reference '{reference}', ignored"
+        )
+        return payment['status']
+
+    current_status = (payment.get('status') or '').lower()
+    if current_status in SETTLED_SUCCESS_STATUSES:
+        logger.info(
+            f"Payment settlement ({source}): reference '{reference}' already settled as success, "
+            f"'{provider_status}' delivery ignored"
+        )
+        return current_status
+    if current_status == target_status:
+        logger.info(
+            f"Payment settlement ({source}): reference '{reference}' already '{target_status}', "
+            "duplicate delivery ignored"
+        )
+        return current_status
+
+    if target_status == PAYMENT_STATUS_SUCCESS:
+        expected_amount = int(round(float(payment['amount']) * 100))
+        expected_currency = (payment.get('currency') or 'XOF').upper()
+        received_amount = provider_data.get('amount')
+        received_currency = (provider_data.get('currency') or '').upper()
+        if received_amount != expected_amount or received_currency != expected_currency:
+            logger.error(
+                f"Payment settlement ({source}): amount mismatch for reference '{reference}' "
+                f"(expected {expected_amount} {expected_currency}, "
+                f"received {received_amount} {received_currency}), payment NOT confirmed"
+            )
+            return current_status
+
+    _, booking_updated = payment_repository.settle_by_reference(
+        provider_reference=reference,
+        payment_status=target_status,
+        raw_provider_response=provider_data,
+    )
+    db.session.commit()
+    if not booking_updated and target_status == PAYMENT_STATUS_SUCCESS:
+        logger.error(
+            f"Payment settlement ({source}): reference '{reference}' settled as success but "
+            f"booking {payment.get('booking_id')} is no longer pending — manual refund may be required"
+        )
+    logger.info(
+        f"Payment settlement ({source}): reference '{reference}' settled as '{target_status}' "
+        f"(booking_id={payment.get('booking_id')}, booking_updated={booking_updated})"
+    )
+    return target_status
 
 
 def is_mock_payment_enabled() -> bool:
@@ -79,7 +170,7 @@ def initiate_payment():
             return jsonify({'error': 'Booking is not pending payment'}), 400
 
         existing_payment = payment_repository.get_for_booking(booking_id)
-        if existing_payment and existing_payment['status'] in ('paid', 'completed'):
+        if existing_payment and existing_payment['status'] in SETTLED_SUCCESS_STATUSES:
             logger.warning(f"Payment initiation rejected: payment already completed ({log_context})")
             return jsonify({'error': 'Payment already completed'}), 400
 
@@ -122,37 +213,91 @@ def initiate_payment():
 
 @payment_bp.route('/webhook', methods=['POST'])
 def payment_webhook():
-    data = request.get_json() or {}
-    data = data.get('data') or {}
+    """Webhook Paystack (public, authentifie par signature HMAC).
+
+    La signature est un HMAC-SHA512 du corps brut avec la cle secrete Paystack,
+    transmis dans le header x-paystack-signature. Tout evenement signe recoit un
+    200 (y compris reference inconnue ou doublon), sinon Paystack re-essaie en
+    boucle.
+    """
+    raw_body = request.get_data()
+    secret_key = current_app.config.get('PAYSTACK_SECRET_KEY') or ''
+    signature = request.headers.get('x-paystack-signature') or ''
+
+    if not secret_key:
+        logger.error("Payment webhook rejected: PAYSTACK_SECRET_KEY is not configured")
+        return jsonify({'error': 'Webhook not configured'}), 401
+
+    expected_signature = hmac.new(
+        secret_key.encode('utf-8'), raw_body, hashlib.sha512
+    ).hexdigest()
+    if not signature or not hmac.compare_digest(expected_signature, signature):
+        logger.warning("Payment webhook rejected: missing or invalid x-paystack-signature")
+        return jsonify({'error': 'Invalid signature'}), 401
+
+    try:
+        payload = json.loads(raw_body) if raw_body else {}
+    except ValueError:
+        logger.warning("Payment webhook rejected: body is not valid JSON")
+        return jsonify({'error': 'Invalid payload'}), 400
+    if not isinstance(payload, dict):
+        payload = {}
+
+    event = payload.get('event') or ''
+    data = payload.get('data') or {}
     reference = data.get('reference')
-    status = data.get('status','pending').lower()
-    logger.info(f"Payment webhook received : {reference, status}")
+    status = (data.get('status') or 'pending').lower()
+    logger.info(f"Payment webhook received : event={event}, reference={reference}, status={status}")
+
     try:
         if not reference:
-            logger.warning("Payment webhook rejected: reference is missing")
-            return jsonify({'error': 'reference is missing'}), 400
+            logger.info(f"Payment webhook ignored: no reference (event={event})")
+            return jsonify({'message': 'Event ignored'}), 200
 
-        payment = payment_repository.update_status_by_reference(
-            provider_reference=reference,
-            status=status,
-        )
-        if not payment:
-            logger.exception(f"Payment webhook: no payment found for reference {reference}")
-            return jsonify({'error': 'Payment not found'}), 404
-
-        db.session.commit()
-
-        logger.info(
-            f"Payment webhook processed: reference={reference}, status='{status}', "
-            f"booking_id={payment.get('booking_id')}"
-        )
-
+        settle_payment_from_provider(reference, data, source='webhook')
         return jsonify({'message': 'Webhook processed successfully'}), 200
 
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Error processing payment webhook (reference={reference}): {e}")
         return jsonify({'error': str(e)}), 500
+
+
+# Page renvoyee au navigateur/WebView apres redirection Paystack. L'app mobile
+# detecte la fin du checkout par le chemin /api/payments/callback puis polle le
+# statut : le contenu de cette page n'est affiche que brievement.
+CALLBACK_HTML = (
+    '<!doctype html>'
+    '<html lang="fr"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    '<title>JELANI - Paiement</title></head>'
+    '<body style="font-family: sans-serif; text-align: center; padding: 48px 16px;">'
+    '<p>Paiement trait&eacute;, vous pouvez fermer cette fen&ecirc;tre.</p>'
+    '</body></html>'
+)
+
+
+@payment_bp.route('/callback', methods=['GET'])
+def payment_callback():
+    """Redirection navigateur apres le checkout Paystack (callback URL du dashboard).
+
+    Les query params (?trxref=...&reference=...) viennent du client : ils ne font
+    pas foi. Le resultat est confirme via l'API Verify de Paystack, puis applique
+    avec les memes regles que le webhook. Repond toujours 200.
+    """
+    reference = request.args.get('reference') or request.args.get('trxref')
+    logger.info(f"Payment callback received (reference={reference})")
+    try:
+        if not reference:
+            logger.warning("Payment callback without reference, nothing to verify")
+        else:
+            verification = PaystackService().verify_payment(reference)
+            settle_payment_from_provider(reference, verification, source='callback')
+    except Exception as e:
+        db.session.rollback()
+        logger.exception(f"Error processing payment callback (reference={reference}): {e}")
+
+    return CALLBACK_HTML, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
 
 @payment_bp.route('/status/<uuid:booking_id>', methods=['GET'])

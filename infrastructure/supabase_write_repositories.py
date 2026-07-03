@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -487,6 +488,11 @@ class SupabaseBookingRepository:
         return self.get(booking_id)
 
 
+# Valeurs de payments.status marquant un paiement encaisse ('paid' et
+# 'completed' sont les valeurs historiques, 'success' la valeur canonique).
+SETTLED_SUCCESS_STATUSES = ("success", "paid", "completed")
+
+
 class SupabasePaymentRepository:
     def create_or_update(
         self,
@@ -499,6 +505,50 @@ class SupabasePaymentRepository:
         provider_payment_url: str | None,
         raw_provider_response: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Reutilise la ligne de paiement non soldee du booking (relance de
+        checkout) plutot que d'en inserer une nouvelle : GET /status renvoie la
+        ligne la plus recente, qui doit suivre la derniere reference emise."""
+        raw_response_json = (
+            json.dumps(raw_provider_response, default=str)
+            if raw_provider_response is not None
+            else None
+        )
+
+        existing = self.get_for_booking(booking_id)
+        if existing and existing["status"] not in SETTLED_SUCCESS_STATUSES:
+            row = (
+                db.session.execute(
+                    text(
+                        """
+                        update public.payments
+                        set customer_id = cast(:customer_id as uuid),
+                            amount = :amount,
+                            provider = :provider,
+                            provider_reference = :provider_reference,
+                            provider_payment_url = :provider_payment_url,
+                            status = 'pending',
+                            paid_at = null,
+                            raw_provider_response = cast(:raw_provider_response as jsonb),
+                            updated_at = timezone('utc', now())
+                        where id = cast(:payment_id as uuid)
+                        returning *
+                        """
+                    ),
+                    {
+                        "payment_id": str(existing["id"]),
+                        "customer_id": str(customer_id),
+                        "amount": amount,
+                        "provider": provider,
+                        "provider_reference": provider_reference,
+                        "provider_payment_url": provider_payment_url,
+                        "raw_provider_response": raw_response_json,
+                    },
+                )
+                .mappings()
+                .one()
+            )
+            return dict(row)
+
         row = (
             db.session.execute(
                 text(
@@ -535,7 +585,7 @@ class SupabasePaymentRepository:
                     "provider": provider,
                     "provider_reference": provider_reference,
                     "provider_payment_url": provider_payment_url,
-                    "raw_provider_response": None,
+                    "raw_provider_response": raw_response_json,
                 },
             )
             .mappings()
@@ -562,16 +612,56 @@ class SupabasePaymentRepository:
         )
         return dict(row) if row else None
 
-    def update_status_by_reference(self, provider_reference: str, status: str) -> dict[str, Any] | None:
-        payment_status = "paid" if status in ("completed", "success", "paid") else "failed"
-        booking_status = "confirmed" if payment_status == "paid" else "pending"
+    def get_by_reference(self, provider_reference: str, for_update: bool = False) -> dict[str, Any] | None:
+        lock_clause = " for update" if for_update else ""
+        row = (
+            db.session.execute(
+                text(
+                    f"""
+                    select *
+                    from public.payments
+                    where provider_reference = :provider_reference{lock_clause}
+                    """
+                ),
+                {"provider_reference": provider_reference},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    def settle_by_reference(
+        self,
+        provider_reference: str,
+        payment_status: str,
+        raw_provider_response: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """payment_status: 'success' ou 'failed' (statuts canoniques lus par le mobile).
+
+        bookings.payment_status est un enum Postgres ('pending','paid','failed','refunded'),
+        d'ou le mapping success -> paid cote booking.
+
+        Le booking n'est mis a jour que s'il est encore 'pending' : un evenement
+        tardif ne doit ni reactiver ni confirmer un booking annule.
+
+        Retourne (ligne payment, booking mis a jour ou non).
+        """
+        booking_payment_status = "paid" if payment_status == "success" else "failed"
+        booking_status = "confirmed" if payment_status == "success" else "pending"
         row = (
             db.session.execute(
                 text(
                     """
                     update public.payments
                     set status = :payment_status,
-                        paid_at = case when :payment_status = 'paid' then timezone('utc', now()) else paid_at end,
+                        paid_at = case
+                            when :payment_status = 'success' then coalesce(paid_at, timezone('utc', now()))
+                            else paid_at
+                        end,
+                        raw_provider_response = coalesce(
+                            cast(:raw_provider_response as jsonb),
+                            raw_provider_response
+                        ),
                         updated_at = timezone('utc', now())
                     where provider_reference = :provider_reference
                     returning *
@@ -580,15 +670,20 @@ class SupabasePaymentRepository:
                 {
                     "provider_reference": provider_reference,
                     "payment_status": payment_status,
+                    "raw_provider_response": (
+                        json.dumps(raw_provider_response, default=str)
+                        if raw_provider_response is not None
+                        else None
+                    ),
                 },
             )
             .mappings()
             .first()
         )
         if not row:
-            return None
+            return None, False
 
-        db.session.execute(
+        booking_row = db.session.execute(
             text(
                 """
                 update public.bookings
@@ -596,12 +691,14 @@ class SupabasePaymentRepository:
                     booking_status = :booking_status,
                     updated_at = timezone('utc', now())
                 where id = cast(:booking_id as uuid)
+                  and booking_status = 'pending'
+                returning id
                 """
             ),
             {
                 "booking_id": str(row["booking_id"]),
-                "payment_status": payment_status,
+                "payment_status": booking_payment_status,
                 "booking_status": booking_status,
             },
-        )
-        return dict(row)
+        ).first()
+        return dict(row), booking_row is not None

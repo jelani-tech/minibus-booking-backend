@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -7,6 +10,7 @@ from tests.base import BackendApiTestCase
 TEST_CUSTOMER_ID = "88888888-8888-8888-8888-888888888888"
 TEST_AUTH_USER_ID = "99999999-9999-9999-9999-999999999999"
 TEST_PASSWORD_HASH = "$2b$12$.MFBQ8RIgpwJyWHscoQ5vuFJ7Dgcaf36QbfbXeRbuInB9yhoGQtrW"
+WEBHOOK_TEST_SECRET = "sk_test_webhook_secret"
 
 
 class BookingPaymentRoutesTest(BackendApiTestCase):
@@ -274,6 +278,312 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         self.assertEqual(
             mock_initialize.call_args.kwargs["email"], self.fallback_payment_email()
         )
+
+    # ------------------------------------------------------------------
+    # Callback Paystack (/api/payments/callback) et webhook
+    # ------------------------------------------------------------------
+
+    def initiate_pending_payment(self):
+        headers = self.auth_headers()
+        booking = self.create_booking()[0]
+        response, _ = self.initiate_payment(
+            headers,
+            {"booking_id": booking["id"], "payment_email": "client@example.com"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payment = response.get_json()["payment"]
+        self.assertEqual(payment["status"], "pending")
+        return headers, booking, payment
+
+    def paystack_transaction_data(self, payment, status="success", amount=None, currency="XOF"):
+        return {
+            "id": 4242,
+            "reference": payment["provider_reference"],
+            "status": status,
+            "amount": (
+                amount
+                if amount is not None
+                else int(round(float(payment["amount"]) * 100))
+            ),
+            "currency": currency,
+        }
+
+    def call_payment_callback(self, reference, verify_data):
+        with patch("routes.payment.PaystackService") as mock_service:
+            mock_service.return_value.verify_payment.return_value = verify_data
+            response = self.client.get(
+                "/api/payments/callback",
+                query_string={"trxref": reference, "reference": reference},
+            )
+        return response
+
+    def post_payment_webhook(self, data, event="charge.success", signature=None):
+        """signature: None = signature valide, False = header absent, str = valeur brute."""
+        self.app.config["PAYSTACK_SECRET_KEY"] = WEBHOOK_TEST_SECRET
+        body = json.dumps({"event": event, "data": data}).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if signature is None:
+            signature = hmac.new(
+                WEBHOOK_TEST_SECRET.encode("utf-8"), body, hashlib.sha512
+            ).hexdigest()
+        if signature is not False:
+            headers["x-paystack-signature"] = signature
+        return self.client.post("/api/payments/webhook", data=body, headers=headers)
+
+    def payment_status_from_api(self, headers, booking_id):
+        response = self.client.get(
+            f"/api/payments/status/{booking_id}", headers=headers
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.get_json()["payment"]
+
+    def booking_row(self, booking_id):
+        from models.public import db
+
+        with self.app.app_context():
+            row = db.session.execute(
+                db.text(
+                    """
+                    select booking_status, payment_status
+                    from public.bookings
+                    where id = cast(:booking_id as uuid)
+                    """
+                ),
+                {"booking_id": booking_id},
+            ).mappings().first()
+            return dict(row)
+
+    def set_booking_status(self, booking_id, booking_status):
+        from models.public import db
+
+        with self.app.app_context():
+            db.session.execute(
+                db.text(
+                    """
+                    update public.bookings
+                    set booking_status = :booking_status
+                    where id = cast(:booking_id as uuid)
+                    """
+                ),
+                {"booking_id": booking_id, "booking_status": booking_status},
+            )
+            db.session.commit()
+
+    def payments_count(self, booking_id):
+        from models.public import db
+
+        with self.app.app_context():
+            return db.session.execute(
+                db.text(
+                    """
+                    select count(*)
+                    from public.payments
+                    where booking_id = cast(:booking_id as uuid)
+                    """
+                ),
+                {"booking_id": booking_id},
+            ).scalar()
+
+    def test_callback_success_confirms_payment_and_booking(self):
+        headers, booking, payment = self.initiate_pending_payment()
+
+        response = self.call_payment_callback(
+            payment["provider_reference"],
+            self.paystack_transaction_data(payment),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.content_type)
+        api_payment = self.payment_status_from_api(headers, booking["id"])
+        self.assertEqual(api_payment["status"], "success")
+        self.assertIsNotNone(api_payment["transaction_id"])
+        booking_row = self.booking_row(booking["id"])
+        self.assertEqual(booking_row["booking_status"], "confirmed")
+        self.assertEqual(booking_row["payment_status"], "paid")
+
+    def test_callback_unknown_reference_returns_200_without_changes(self):
+        headers, booking, payment = self.initiate_pending_payment()
+        verify_data = self.paystack_transaction_data(payment)
+        verify_data["reference"] = "ref-inconnue"
+
+        response = self.call_payment_callback("ref-inconnue", verify_data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.payment_status_from_api(headers, booking["id"])["status"], "pending"
+        )
+        self.assertEqual(self.booking_row(booking["id"])["booking_status"], "pending")
+
+    def test_callback_verify_failure_marks_payment_failed(self):
+        for provider_status in ("failed", "abandoned"):
+            with self.subTest(provider_status=provider_status):
+                headers, booking, payment = self.initiate_pending_payment()
+
+                response = self.call_payment_callback(
+                    payment["provider_reference"],
+                    self.paystack_transaction_data(payment, status=provider_status),
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    self.payment_status_from_api(headers, booking["id"])["status"],
+                    "failed",
+                )
+                booking_row = self.booking_row(booking["id"])
+                self.assertEqual(booking_row["booking_status"], "pending")
+                self.assertEqual(booking_row["payment_status"], "failed")
+
+    def test_callback_amount_mismatch_does_not_confirm(self):
+        headers, booking, payment = self.initiate_pending_payment()
+
+        response = self.call_payment_callback(
+            payment["provider_reference"],
+            self.paystack_transaction_data(payment, amount=1),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.payment_status_from_api(headers, booking["id"])["status"], "pending"
+        )
+        self.assertEqual(self.booking_row(booking["id"])["booking_status"], "pending")
+
+    def test_webhook_rejects_missing_or_invalid_signature(self):
+        headers, booking, payment = self.initiate_pending_payment()
+        data = self.paystack_transaction_data(payment)
+
+        missing = self.post_payment_webhook(data, signature=False)
+        invalid = self.post_payment_webhook(data, signature="0" * 128)
+
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(invalid.status_code, 401)
+        self.assertEqual(
+            self.payment_status_from_api(headers, booking["id"])["status"], "pending"
+        )
+        self.assertEqual(self.booking_row(booking["id"])["booking_status"], "pending")
+
+    def test_webhook_unknown_reference_returns_200(self):
+        response = self.post_payment_webhook(
+            {
+                "reference": "ref-inconnue",
+                "status": "success",
+                "amount": 100,
+                "currency": "XOF",
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_callback_then_webhook_failure_never_downgrades_success(self):
+        headers, booking, payment = self.initiate_pending_payment()
+        self.call_payment_callback(
+            payment["provider_reference"],
+            self.paystack_transaction_data(payment),
+        )
+
+        webhook_response = self.post_payment_webhook(
+            self.paystack_transaction_data(payment, status="failed"),
+            event="charge.failed",
+        )
+
+        self.assertEqual(webhook_response.status_code, 200)
+        self.assertEqual(
+            self.payment_status_from_api(headers, booking["id"])["status"], "success"
+        )
+        self.assertEqual(self.booking_row(booking["id"])["booking_status"], "confirmed")
+
+    def test_reinitiate_payment_reuses_pending_row_and_follows_new_reference(self):
+        headers, booking, first_payment = self.initiate_pending_payment()
+
+        response, _ = self.initiate_payment(
+            headers,
+            {"booking_id": booking["id"], "payment_email": "client@example.com"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        second_payment = response.get_json()["payment"]
+        self.assertEqual(second_payment["id"], first_payment["id"])
+        self.assertNotEqual(
+            second_payment["provider_reference"], first_payment["provider_reference"]
+        )
+        self.assertEqual(self.payments_count(booking["id"]), 1)
+
+        # Le paiement du booking suit la derniere reference emise
+        self.call_payment_callback(
+            second_payment["provider_reference"],
+            self.paystack_transaction_data(second_payment),
+        )
+        self.assertEqual(
+            self.payment_status_from_api(headers, booking["id"])["status"], "success"
+        )
+
+    def test_reinitiate_after_failure_resets_payment_to_pending(self):
+        headers, booking, payment = self.initiate_pending_payment()
+        self.call_payment_callback(
+            payment["provider_reference"],
+            self.paystack_transaction_data(payment, status="failed"),
+        )
+        self.assertEqual(
+            self.payment_status_from_api(headers, booking["id"])["status"], "failed"
+        )
+
+        response, _ = self.initiate_payment(
+            headers,
+            {"booking_id": booking["id"], "payment_email": "client@example.com"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        new_payment = response.get_json()["payment"]
+        self.assertEqual(new_payment["id"], payment["id"])
+        self.assertEqual(new_payment["status"], "pending")
+        self.assertEqual(self.payments_count(booking["id"]), 1)
+
+    def test_late_event_does_not_touch_cancelled_booking(self):
+        for provider_status in ("success", "failed"):
+            with self.subTest(provider_status=provider_status):
+                headers, booking, payment = self.initiate_pending_payment()
+                self.set_booking_status(booking["id"], "cancelled")
+
+                response = self.post_payment_webhook(
+                    self.paystack_transaction_data(payment, status=provider_status),
+                    event=(
+                        "charge.success"
+                        if provider_status == "success"
+                        else "charge.failed"
+                    ),
+                )
+
+                self.assertEqual(response.status_code, 200)
+                # Le paiement est solde mais le booking annule reste annule
+                expected_payment_status = (
+                    "success" if provider_status == "success" else "failed"
+                )
+                self.assertEqual(
+                    self.payment_status_from_api(headers, booking["id"])["status"],
+                    expected_payment_status,
+                )
+                booking_row = self.booking_row(booking["id"])
+                self.assertEqual(booking_row["booking_status"], "cancelled")
+                self.assertEqual(booking_row["payment_status"], "pending")
+
+    def test_webhook_then_callback_is_idempotent(self):
+        headers, booking, payment = self.initiate_pending_payment()
+        data = self.paystack_transaction_data(payment)
+
+        webhook_response = self.post_payment_webhook(data)
+        self.assertEqual(webhook_response.status_code, 200)
+        first = self.payment_status_from_api(headers, booking["id"])
+        self.assertEqual(first["status"], "success")
+
+        callback_response = self.call_payment_callback(
+            payment["provider_reference"], data
+        )
+
+        self.assertEqual(callback_response.status_code, 200)
+        second = self.payment_status_from_api(headers, booking["id"])
+        self.assertEqual(second["status"], "success")
+        # Aucune re-ecriture lors de la seconde livraison
+        self.assertEqual(second["updated_at"], first["updated_at"])
+        self.assertEqual(self.booking_row(booking["id"])["booking_status"], "confirmed")
 
 
 if __name__ == "__main__":
