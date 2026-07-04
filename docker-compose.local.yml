@@ -22,6 +22,9 @@ services:
     build: .
     container_name: minibus_local_backend
     restart: unless-stopped
+    # En local : serveur de dev Flask (debug + auto-reload), à la place du
+    # gunicorn défini dans le Dockerfile pour la production.
+    command: python app.py
     ports:
       - "8000:8000"
     volumes:

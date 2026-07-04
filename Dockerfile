@@ -15,4 +15,6 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["python", "app.py"]
+# Serveur WSGI de production. Le serveur de dev Flask (python app.py) reste
+# disponible en local via le `command:` du docker-compose.local.yml.
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "60", "--access-logfile", "-", "app:create_app()"]

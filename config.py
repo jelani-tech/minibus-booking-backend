@@ -11,7 +11,10 @@ else:
 
 class Config:
     APP_ENV = os.environ.get('APP_ENV', 'development')
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
+    # Pas de valeur par défaut codée en dur : une clé absente doit être détectée
+    # au démarrage (cf. _require_secrets dans app.py) plutôt que de retomber
+    # silencieusement sur un secret devinable.
+    SECRET_KEY = os.environ.get('SECRET_KEY')
     SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'postgresql://user:password@localhost/minibus_db'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {
@@ -20,7 +23,7 @@ class Config:
     }
     AUTO_UPGRADE_DB = os.environ.get('AUTO_UPGRADE_DB', 'false').lower() == 'true'
     LEGACY_SCHEMA_BOOTSTRAP = os.environ.get('LEGACY_SCHEMA_BOOTSTRAP', 'false').lower() == 'true'
-    JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY') or 'jwt-secret-key-change-in-production'
+    JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
     JWT_ACCESS_TOKEN_EXPIRES = 86400  # 24 hours
     
     # Payment service API keys

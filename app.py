@@ -1,3 +1,4 @@
+import hashlib
 import os
 import click
 from flask import Flask, current_app
@@ -20,6 +21,34 @@ import models.clients
 import models.partners
 import models.vehicles
 import models.auth
+
+
+# Secrets requis pour signer les données confiées au client (JWT, et à terme
+# sessions/CSRF Flask via SECRET_KEY). En production, l'absence de l'un d'eux
+# doit empêcher le démarrage plutôt que de laisser l'app tourner avec une clé
+# faible ; en développement, on tolère une valeur de repli avec un avertissement.
+REQUIRED_SECRETS = ('SECRET_KEY', 'JWT_SECRET_KEY')
+
+
+def _require_secrets(app):
+    is_prod = app.config.get('APP_ENV') != 'development'
+    for key in REQUIRED_SECRETS:
+        value = app.config.get(key)
+        if not value:
+            if is_prod:
+                raise RuntimeError(
+                    f"{key} n'est pas défini : refus de démarrer en production. "
+                    f"Configurez la variable d'environnement {key}."
+                )
+            # Dev uniquement : repli explicite pour que l'app tourne en local.
+            app.config[key] = f"dev-{key.lower()}-not-for-production"
+            logger.warning(
+                f"{key} non défini : utilisation d'une valeur de développement "
+                "(ne jamais utiliser en production)"
+            )
+        else:
+            fingerprint = hashlib.sha256(value.encode()).hexdigest()[:8]
+            logger.info(f"{key} chargé (empreinte {fingerprint})")
 
 
 def create_app():
@@ -51,6 +80,11 @@ def create_app():
 
     # Initialize database and Flask-Migrate
     init_db(app)
+
+    # Après init_db, qui réapplique la config : vérifie les secrets (et pose le
+    # repli de dev) une fois que plus aucun from_object ne peut l'écraser.
+    _require_secrets(app)
+
     # Multi-schema project (public/clients/partners):
     # include_schemas=True is required so Alembic autogenerate can resolve
     # cross-schema foreign keys (e.g. public.steps -> partners.partners).
@@ -126,6 +160,10 @@ def create_app():
 
 
 if __name__ == '__main__':
+    # Serveur de dev uniquement : en production l'app est servie par gunicorn
+    # (cf. Dockerfile) et ce bloc n'est jamais exécuté. Le mode debug (débogueur
+    # Werkzeug + auto-reload) n'est activé qu'en environnement de développement.
     app = create_app()
-    app.run(debug=True, host='0.0.0.0', port=8000)
+    debug = app.config.get('APP_ENV') == 'development'
+    app.run(debug=debug, host='0.0.0.0', port=8000)
 
