@@ -167,6 +167,8 @@ def booking_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
         "qr_payload": qr_payload,
         "passenger_name": row.get("customer_full_name"),
         "passenger_phone": row.get("customer_phone"),
+        "pickup_stop_id": row.get("pickup_stop_id"),
+        "dropoff_stop_id": row.get("dropoff_stop_id"),
         "created_at": json_value(row.get("booking_created_at")),
         "updated_at": json_value(row.get("booking_updated_at")),
         "expires_at": json_value(row.get("expires_at")),

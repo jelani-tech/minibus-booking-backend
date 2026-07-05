@@ -169,6 +169,8 @@ select
     b.unit_price,
     b.total_price,
     b.trip_id,
+    b.pickup_stop_id,
+    b.dropoff_stop_id,
     c.id as customer_id,
     c.first_name as customer_first_name,
     c.last_name as customer_last_name,
