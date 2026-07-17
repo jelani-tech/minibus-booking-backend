@@ -137,6 +137,21 @@ class SupabaseAuthRepository:
             {"id": str(reset_id)},
         )
 
+    def update_phone(self, *, old_phone: str, new_phone: str) -> bool:
+        """Updates a user's phone number in auth.users."""
+        result = db.session.execute(
+            text(
+                """
+                update auth.users
+                set phone = :new_phone,
+                    updated_at = timezone('utc', now())
+                where phone = :old_phone
+                """
+            ),
+            {"old_phone": old_phone, "new_phone": new_phone},
+        )
+        return result.rowcount > 0
+
     def update_password(self, *, phone: str, password: str) -> bool:
         """Met à jour le mot de passe d'un utilisateur dans auth.users."""
         encrypted = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -314,6 +329,51 @@ class SupabaseCustomerRepository:
             .one()
         )
         return dict(row)
+
+    def update_profile(
+        self,
+        *,
+        customer_id: UUID | str,
+        name: str | None = None,
+        phone: str | None = None,
+        email: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Updates the name, phone, and/or email of an existing customer.
+
+        Only the provided fields (not None) are modified; the others keep
+        their current value.
+        """
+        first_name = last_name = None
+        if name:
+            first_name, last_name = split_customer_name(name)
+
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    update public.customers
+                    set first_name = coalesce(:first_name, first_name),
+                        last_name = case when :name_provided then :last_name else last_name end,
+                        phone = coalesce(:phone, phone),
+                        email = coalesce(:email, email),
+                        updated_at = timezone('utc', now())
+                    where id = cast(:customer_id as uuid)
+                    returning *
+                    """
+                ),
+                {
+                    "customer_id": str(customer_id),
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "name_provided": name is not None,
+                    "phone": phone,
+                    "email": email,
+                },
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
 
     def find_by_auth_user_id(self, auth_user_id: UUID | str) -> dict[str, Any] | None:
         """Récupère le profil customer lié à un auth_user_id."""

@@ -321,3 +321,60 @@ def reset_password():
         db.session.rollback()
         logger.exception(f"Error during password reset for {_mask_phone(phone)}: {e}")
         return jsonify({'error': str(e)}), 500
+
+@auth_bp.route('/update', methods=['PUT'])
+@jwt_required()
+def update_profile():
+    """Updates the authenticated customer's profile (name, phone, email).
+
+    Flow:
+    1. Validate that at least one of the fields (phone, email, name) is provided.
+    2. If the phone number changes, check it isn't already used by another
+       account, then update it in auth.users (login) and public.customers.
+    3. Update the name and/or email in public.customers.
+    4. Return the updated profile.
+    """
+    customer_id = get_jwt_identity()
+    try:
+        data = request.get_json() or {}
+        phone = (data.get('phone') or '').strip() or None
+        email = (data.get('email') or '').strip() or None
+        name = (data.get('name') or '').strip() or None
+
+        if not phone and not email and not name:
+            logger.warning(f"Profile update rejected for customer_id={customer_id}: no field provided")
+            return jsonify({'error': 'Au moins un des champs phone, email ou name est requis'}), 400
+
+        customer = customer_repository.get(customer_id)
+        if not customer:
+            logger.warning(f"Profile update rejected: customer not found (customer_id={customer_id})")
+            return jsonify({'error': 'Utilisateur introuvable'}), 404
+
+        if phone and phone != customer.get('phone'):
+            existing = customer_repository.find_by_phone(phone)
+            if existing and str(existing['id']) != str(customer_id):
+                logger.warning(f"Profile update rejected for {customer_id}: phone {_mask_phone(phone)} already in use")
+                return jsonify({'error': 'Ce numéro de téléphone est déjà utilisé par un autre compte'}), 409
+
+            if customer.get('auth_user_id') and customer.get('phone'):
+                auth_repository.update_phone(old_phone=customer['phone'], new_phone=phone)
+
+        updated_customer = customer_repository.update_profile(
+            customer_id=customer_id,
+            name=name,
+            phone=phone,
+            email=email,
+        )
+        db.session.commit()
+
+        logger.info(f"Profile updated for customer_id={customer_id}")
+
+        return jsonify({
+            'message': 'Profil mis à jour avec succès',
+            'user': customer_row_to_api(updated_customer),
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception(f"Error during updating profile for {customer_id}: {e} ")
+        return jsonify({'error': str(e)}), 500
