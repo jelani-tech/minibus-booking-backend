@@ -38,5 +38,10 @@ docs {
   La réponse contient `payment_url` (redirectUrl JEKO) vers laquelle rediriger
   le client, et `transaction_id` (référence JEKO-... générée par le backend).
 
+  Retour de fin de checkout : si BOOKING_DEEPLINK_CALLBACK est configuré côté
+  serveur (ex: jelani://payment-callback), JEKO redirige directement vers
+  l'app mobile (deep link) ; sinon vers la page HTML du backend
+  (GET /api/payments/callback).
+
   Remplacez `booking_id` par l'ID d'une réservation en attente.
 }

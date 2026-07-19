@@ -13,6 +13,9 @@ TEST_PASSWORD_HASH = "$2b$12$.MFBQ8RIgpwJyWHscoQ5vuFJ7Dgcaf36QbfbXeRbuInB9yhoGQt
 WEBHOOK_TEST_SECRET = "sk_test_webhook_secret"
 JEKO_WEBHOOK_TEST_SECRET = "jeko_test_webhook_secret"
 JEKO_TEST_PUBLIC_BASE_URL = "https://api.test.local"
+JEKO_TEST_PAYER_PHONE = "+2250700000001"
+JEKO_TEST_CONTACT_ID = "c0ffee00-0000-0000-0000-000000000001"
+JEKO_TEST_TRANSFER_ID = "7ransfer-0000-0000-0000-000000000001"
 
 
 class BookingPaymentRoutesTest(BackendApiTestCase):
@@ -23,6 +26,7 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         # être en PAYMENT_PROVIDER=jeko) : les tests JEKO posent explicitement
         # leur config via use_jeko_provider.
         self.app.config["PAYMENT_PROVIDER"] = "paystack"
+        self.app.config["BOOKING_DEEPLINK_CALLBACK"] = ""
 
         with self.app.app_context():
             db.session.execute(
@@ -48,7 +52,8 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
                     """
                     update public.trips
                     set capacity_booked = 0,
-                        capacity_available = capacity_total - capacity_blocked
+                        capacity_available = capacity_total - capacity_blocked,
+                        planned_start_datetime = timezone('utc', now()) + interval '1 day'
                     """
                 )
             )
@@ -667,6 +672,9 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
             },
             "fees": {"amount": 150, "currency": currency},
             "transactionType": "payment",
+            "counterpartLabel": "Jean Client",
+            "counterpartIdentifier": JEKO_TEST_PAYER_PHONE,
+            "paymentMethod": "wave",
             "transactionDetails": {
                 "id": "pr_abc123",
                 "reference": payment["provider_reference"],
@@ -736,6 +744,31 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
             f"{JEKO_TEST_PUBLIC_BASE_URL}/api/payments/callback"
             f"?provider=jeko&reference={payment['provider_reference']}"
         )
+        self.assertEqual(call_kwargs["success_url"], expected_callback)
+        self.assertEqual(call_kwargs["error_url"], expected_callback)
+
+    def test_initiate_jeko_payment_uses_deeplink_callback_when_configured(self):
+        headers = self.auth_headers()
+        booking = self.create_booking()[0]
+
+        original = self.app.config.get("BOOKING_DEEPLINK_CALLBACK")
+        self.addCleanup(
+            lambda: self.app.config.update(BOOKING_DEEPLINK_CALLBACK=original)
+        )
+        self.app.config["BOOKING_DEEPLINK_CALLBACK"] = "jelani://payment-callback"
+
+        response, mock_initialize = self.initiate_jeko_payment(
+            headers,
+            {"booking_id": booking["id"], "payment_method": "wave"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        reference = response.get_json()["payment"]["provider_reference"]
+        expected_callback = (
+            f"jelani://payment-callback?provider=jeko&reference={reference}"
+            f"&booking_id={booking['id']}"
+        )
+        call_kwargs = mock_initialize.call_args.kwargs
         self.assertEqual(call_kwargs["success_url"], expected_callback)
         self.assertEqual(call_kwargs["error_url"], expected_callback)
 
@@ -883,6 +916,308 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
             second_payment["provider_reference"], first_payment["provider_reference"]
         )
         self.assertEqual(self.payments_count(booking["id"]), 1)
+
+    # ------------------------------------------------------------------
+    # Annulation de réservation (fenêtre 1h) + remboursement JEKO
+    # ------------------------------------------------------------------
+
+    def set_trip_start_in(self, trip_id, minutes):
+        from models.public import db
+
+        with self.app.app_context():
+            db.session.execute(
+                db.text(
+                    """
+                    update public.trips
+                    set planned_start_datetime = timezone('utc', now())
+                        + make_interval(mins => :minutes)
+                    where id = cast(:trip_id as uuid)
+                    """
+                ),
+                {"trip_id": trip_id, "minutes": minutes},
+            )
+            db.session.commit()
+
+    def payment_row(self, booking_id):
+        from models.public import db
+
+        with self.app.app_context():
+            row = db.session.execute(
+                db.text(
+                    """
+                    select status, raw_provider_response
+                    from public.payments
+                    where booking_id = cast(:booking_id as uuid)
+                    order by created_at desc
+                    limit 1
+                    """
+                ),
+                {"booking_id": booking_id},
+            ).mappings().first()
+            return dict(row) if row else None
+
+    def settled_jeko_payment(self):
+        """Booking payé via JEKO (webhook signé), prêt à être annulé/remboursé."""
+        headers, booking, payment = self.initiate_jeko_pending_payment()
+        response = self.post_jeko_webhook(self.jeko_webhook_data(payment))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.payment_status_from_api(headers, booking["id"])["status"], "success"
+        )
+        return headers, booking, payment
+
+    def cancel_booking_request(self, headers, booking_id, configure_mock=None):
+        """DELETE /api/bookings/<id> avec JekoService mocké côté refund.
+
+        configure_mock(service_mock) permet d'ajuster les retours/erreurs.
+        Par défaut : contact créé + virement 'pending'.
+        """
+        with patch("services.refund_service.JekoService") as mock_service:
+            service = mock_service.return_value
+            service.create_beneficiary_contact.return_value = JEKO_TEST_CONTACT_ID
+            service.create_transfer.return_value = {
+                "status": "pending",
+                "transfer_id": JEKO_TEST_TRANSFER_ID,
+                "reference": "unused",
+                "raw": {"id": JEKO_TEST_TRANSFER_ID, "status": "pending"},
+            }
+            if configure_mock is not None:
+                configure_mock(service)
+            response = self.client.delete(
+                f"/api/bookings/{booking_id}", headers=headers
+            )
+        return response, service
+
+    def jeko_transfer_webhook_data(self, payment, status="success", amount=None):
+        data = self.jeko_webhook_data(payment, status=status, amount=amount)
+        data["transactionType"] = "transfer"
+        data["transactionDetails"]["reference"] = f"RF-{payment['provider_reference']}"
+        return data
+
+    def test_cancel_unpaid_booking_returns_no_refund(self):
+        headers = self.auth_headers()
+        booking = self.create_booking()[0]
+
+        response, service = self.cancel_booking_request(headers, booking["id"])
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["refund"], {"status": "none"})
+        self.assertEqual(self.booking_row(booking["id"])["booking_status"], "cancelled")
+        service.create_transfer.assert_not_called()
+
+    def test_cancel_within_cutoff_rejected(self):
+        headers = self.auth_headers()
+        booking = self.create_booking()[0]
+        self.set_trip_start_in(booking["trip_id"], 30)
+
+        response, service = self.cancel_booking_request(headers, booking["id"])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("before departure", response.get_json()["error"])
+        self.assertEqual(self.booking_row(booking["id"])["booking_status"], "pending")
+        service.create_transfer.assert_not_called()
+
+    def test_cancel_departed_trip_rejected(self):
+        headers = self.auth_headers()
+        booking = self.create_booking()[0]
+        self.set_trip_start_in(booking["trip_id"], -120)
+
+        response, _ = self.cancel_booking_request(headers, booking["id"])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.booking_row(booking["id"])["booking_status"], "pending")
+
+    def test_cancel_jeko_paid_initiates_transfer(self):
+        headers, booking, payment = self.settled_jeko_payment()
+
+        response, service = self.cancel_booking_request(headers, booking["id"])
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        expected_reference = f"RF-{payment['provider_reference']}"
+        self.assertEqual(payload["refund"]["status"], "initiated")
+        self.assertEqual(payload["refund"]["reference"], expected_reference)
+
+        contact_kwargs = service.create_beneficiary_contact.call_args.kwargs
+        self.assertEqual(contact_kwargs["identifier"], JEKO_TEST_PAYER_PHONE)
+        self.assertEqual(contact_kwargs["payment_method"], "wave")
+        transfer_kwargs = service.create_transfer.call_args.kwargs
+        self.assertEqual(
+            transfer_kwargs["amount_cents"],
+            int(round(float(payment["amount"]) * 100)),
+        )
+        self.assertEqual(transfer_kwargs["reference"], expected_reference)
+        self.assertEqual(transfer_kwargs["contact_id"], JEKO_TEST_CONTACT_ID)
+
+        self.assertEqual(self.payment_row(booking["id"])["status"], "refund_pending")
+        booking_row = self.booking_row(booking["id"])
+        self.assertEqual(booking_row["booking_status"], "cancelled")
+        self.assertEqual(booking_row["payment_status"], "paid")
+
+    def test_jeko_transfer_webhook_success_marks_refunded(self):
+        headers, booking, payment = self.settled_jeko_payment()
+        self.cancel_booking_request(headers, booking["id"])
+
+        response = self.post_jeko_webhook(self.jeko_transfer_webhook_data(payment))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.payment_row(booking["id"])["status"], "refunded")
+        booking_row = self.booking_row(booking["id"])
+        self.assertEqual(booking_row["booking_status"], "cancelled")
+        self.assertEqual(booking_row["payment_status"], "refunded")
+
+    def test_jeko_transfer_webhook_error_marks_refund_required(self):
+        headers, booking, payment = self.settled_jeko_payment()
+        self.cancel_booking_request(headers, booking["id"])
+
+        response = self.post_jeko_webhook(
+            self.jeko_transfer_webhook_data(payment, status="error")
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.payment_row(booking["id"])["status"], "refund_required")
+        self.assertEqual(self.booking_row(booking["id"])["payment_status"], "paid")
+
+    def test_jeko_transfer_creation_failure_still_cancels(self):
+        headers, booking, payment = self.settled_jeko_payment()
+
+        def failing_transfer(service):
+            service.create_transfer.side_effect = Exception("insufficient_balance")
+
+        response, _ = self.cancel_booking_request(
+            headers, booking["id"], configure_mock=failing_transfer
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["refund"]["status"], "manual")
+        self.assertEqual(self.booking_row(booking["id"])["booking_status"], "cancelled")
+        payment_row = self.payment_row(booking["id"])
+        self.assertEqual(payment_row["status"], "refund_required")
+        self.assertEqual(
+            payment_row["raw_provider_response"]["refund"]["reason"],
+            "transfer_creation_failed",
+        )
+
+    def test_jeko_duplicate_transfer_reference_treated_as_initiated(self):
+        from services.jeko_service import JekoDuplicateReferenceError
+
+        headers, booking, payment = self.settled_jeko_payment()
+
+        def duplicate_transfer(service):
+            service.create_transfer.side_effect = JekoDuplicateReferenceError("dup")
+
+        response, _ = self.cancel_booking_request(
+            headers, booking["id"], configure_mock=duplicate_transfer
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["refund"]["status"], "initiated")
+        self.assertEqual(self.payment_row(booking["id"])["status"], "refund_pending")
+
+    def test_cancel_jeko_transfer_success_synchronous_marks_refunded(self):
+        headers, booking, payment = self.settled_jeko_payment()
+
+        def sync_success(service):
+            service.create_transfer.return_value = {
+                "status": "success",
+                "transfer_id": JEKO_TEST_TRANSFER_ID,
+                "reference": "unused",
+                "raw": {"id": JEKO_TEST_TRANSFER_ID, "status": "success"},
+            }
+
+        response, _ = self.cancel_booking_request(
+            headers, booking["id"], configure_mock=sync_success
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["refund"]["status"], "completed")
+        self.assertEqual(self.payment_row(booking["id"])["status"], "refunded")
+        booking_row = self.booking_row(booking["id"])
+        self.assertEqual(booking_row["payment_status"], "refunded")
+        # Le booking re-fetché dans la réponse reflète le refund
+        self.assertEqual(payload["booking"]["payment_status"], "refunded")
+
+    def test_cancel_paystack_paid_marks_refund_required(self):
+        headers, booking, payment = self.initiate_pending_payment()
+        webhook_response = self.post_payment_webhook(
+            self.paystack_transaction_data(payment)
+        )
+        self.assertEqual(webhook_response.status_code, 200)
+
+        response, service = self.cancel_booking_request(headers, booking["id"])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["refund"]["status"], "manual")
+        service.create_beneficiary_contact.assert_not_called()
+        service.create_transfer.assert_not_called()
+        payment_row = self.payment_row(booking["id"])
+        self.assertEqual(payment_row["status"], "refund_required")
+        self.assertEqual(
+            payment_row["raw_provider_response"]["refund"]["reason"],
+            "paystack_manual_refund",
+        )
+
+    def test_cancel_jeko_payer_unrecoverable_falls_back_then_manual(self):
+        headers, booking, payment = self.initiate_jeko_pending_payment()
+        # Webhook sans les infos payeur : l'extraction directe échoue
+        data = self.jeko_webhook_data(payment)
+        del data["counterpartIdentifier"]
+        del data["paymentMethod"]
+        self.assertEqual(self.post_jeko_webhook(data).status_code, 200)
+
+        def verify_without_payer(service):
+            service.verify_payment.return_value = {"status": "success", "raw": {}}
+
+        response, service = self.cancel_booking_request(
+            headers, booking["id"], configure_mock=verify_without_payer
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["refund"]["status"], "manual")
+        # Le fallback re-fetch a bien été tenté avec l'id de payment request
+        service.verify_payment.assert_called_once_with("pr_abc123")
+        self.assertEqual(self.payment_row(booking["id"])["status"], "refund_required")
+
+    def test_double_cancel_returns_400_without_second_transfer(self):
+        headers, booking, payment = self.settled_jeko_payment()
+        first, _ = self.cancel_booking_request(headers, booking["id"])
+        self.assertEqual(first.status_code, 200)
+
+        second, service = self.cancel_booking_request(headers, booking["id"])
+
+        self.assertEqual(second.status_code, 400)
+        self.assertIn("already cancelled", second.get_json()["error"])
+        service.create_transfer.assert_not_called()
+        self.assertEqual(self.payment_row(booking["id"])["status"], "refund_pending")
+
+    def test_late_payment_webhook_does_not_downgrade_refund_status(self):
+        headers, booking, payment = self.settled_jeko_payment()
+        self.cancel_booking_request(headers, booking["id"])
+        self.assertEqual(self.payment_row(booking["id"])["status"], "refund_pending")
+
+        # Redélivrance du webhook de PAIEMENT après le passage en refund
+        response = self.post_jeko_webhook(self.jeko_webhook_data(payment))
+
+        self.assertEqual(response.status_code, 200)
+        payment_row = self.payment_row(booking["id"])
+        self.assertEqual(payment_row["status"], "refund_pending")
+        # Les détails du refund dans le jsonb n'ont pas été écrasés
+        self.assertIn("refund", payment_row["raw_provider_response"])
+
+    def test_transfer_webhook_unknown_reference_returns_200(self):
+        data = {
+            "id": "txn_x",
+            "status": "success",
+            "amount": {"amount": 100, "currency": "XOF"},
+            "transactionType": "transfer",
+            "transactionDetails": {"id": "tr_x", "reference": "RF-inconnue"},
+        }
+
+        response = self.post_jeko_webhook(data)
+
+        self.assertEqual(response.status_code, 200)
 
 
 if __name__ == "__main__":

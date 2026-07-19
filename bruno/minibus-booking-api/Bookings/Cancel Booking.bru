@@ -17,10 +17,31 @@ headers {
 
 docs {
   # Cancel Booking
-  
+
   Annule une réservation.
   Nécessite un token JWT valide.
-  Remplacez `1` par l'ID de la réservation à annuler.
+  Remplacez `1` par l'ID (UUID) de la réservation à annuler.
   Les places seront automatiquement remises à disposition.
+
+  ## Fenêtre d'annulation
+
+  Possible jusqu'à 1h avant le départ du trip (configurable via
+  BOOKING_CANCELLATION_CUTOFF_MINUTES). Sinon 400 :
+  `{"error": "Cancellation is only allowed up to 60 minutes before departure"}`
+
+  ## Remboursement
+
+  La réponse contient un objet `refund` :
+  - `{"status": "none"}` : rien à rembourser (paiement absent/pending/failed)
+  - `{"status": "initiated", "reference": "RF-..."}` : virement JEKO créé,
+    confirmation asynchrone par webhook (payments.status = refund_pending)
+  - `{"status": "completed", ...}` : virement confirmé immédiatement
+    (payments.status = refunded, booking.payment_status = refunded)
+  - `{"status": "manual", "reason": "..."}` : à traiter manuellement
+    (paiement Paystack, échec du virement, payeur introuvable...) —
+    payments.status = refund_required
+
+  Le remboursement est intégral, envoyé au numéro mobile money qui a payé.
+  L'échec du remboursement n'empêche jamais l'annulation.
 }
 

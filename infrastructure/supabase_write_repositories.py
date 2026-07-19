@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -526,7 +527,12 @@ class SupabaseBookingRepository:
         )
         return dict(row) if row else None
 
-    def cancel(self, booking_id: UUID | str, customer_id: UUID | str) -> dict[str, Any]:
+    def cancel(
+        self,
+        booking_id: UUID | str,
+        customer_id: UUID | str,
+        cutoff_minutes: int = 60,
+    ) -> dict[str, Any]:
         existing = self.get(booking_id)
         if not existing:
             raise ValueError("Booking not found")
@@ -534,6 +540,17 @@ class SupabaseBookingRepository:
             raise PermissionError("Unauthorized")
         if existing["booking_status"] == "cancelled":
             raise ValueError("Booking already cancelled")
+
+        # Fenêtre d'annulation : refusée à moins de cutoff_minutes du départ
+        # (couvre aussi les trips déjà partis).
+        planned_start = existing.get("planned_start_datetime")
+        if planned_start is not None:
+            if planned_start.tzinfo is None:
+                planned_start = planned_start.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > planned_start - timedelta(minutes=cutoff_minutes):
+                raise ValueError(
+                    f"Cancellation is only allowed up to {cutoff_minutes} minutes before departure"
+                )
 
         db.session.execute(
             text(
@@ -553,6 +570,12 @@ class SupabaseBookingRepository:
 # Valeurs de payments.status marquant un paiement encaisse ('paid' et
 # 'completed' sont les valeurs historiques, 'success' la valeur canonique).
 SETTLED_SUCCESS_STATUSES = ("success", "paid", "completed")
+
+# États de remboursement (payments.status) : refund_pending = virement JEKO créé
+# en attente de confirmation webhook ; refunded = confirmé (terminal) ;
+# refund_required = à traiter manuellement (Paystack, payeur introuvable, échec
+# du virement...).
+REFUND_STATUSES = ("refund_pending", "refunded", "refund_required")
 
 
 class SupabasePaymentRepository:
@@ -763,4 +786,109 @@ class SupabasePaymentRepository:
                 "booking_status": booking_status,
             },
         ).first()
+        return dict(row), booking_row is not None
+
+    def mark_refund(
+        self,
+        payment_id: UUID | str,
+        refund_status: str,
+        refund_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Pose un état de remboursement (cf. REFUND_STATUSES) sur le paiement.
+
+        Les détails du remboursement sont fusionnés sous la clé 'refund' du
+        jsonb raw_provider_response (pas d'écrasement des données de paiement).
+        """
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    update public.payments
+                    set status = :refund_status,
+                        raw_provider_response = case
+                            when cast(:refund_data as jsonb) is null then raw_provider_response
+                            else coalesce(raw_provider_response, '{}'::jsonb)
+                                 || jsonb_build_object('refund', cast(:refund_data as jsonb))
+                        end,
+                        updated_at = timezone('utc', now())
+                    where id = cast(:payment_id as uuid)
+                    returning *
+                    """
+                ),
+                {
+                    "payment_id": str(payment_id),
+                    "refund_status": refund_status,
+                    "refund_data": (
+                        json.dumps(refund_data, default=str)
+                        if refund_data is not None
+                        else None
+                    ),
+                },
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    def settle_refund_by_reference(
+        self,
+        provider_reference: str,
+        refund_status: str,
+        provider_data: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Applique le résultat d'un virement de remboursement JEKO.
+
+        refund_status: 'refunded' ou 'refund_required'. Si 'refunded', le booking
+        passe payment_status='refunded' (booking_status inchangé : déjà annulé).
+        Les données du virement sont fusionnées sous 'refund_settlement' dans le
+        jsonb, sans écraser les données de paiement.
+
+        Retourne (ligne payment, booking mis à jour ou non).
+        """
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    update public.payments
+                    set status = :refund_status,
+                        raw_provider_response = case
+                            when cast(:provider_data as jsonb) is null then raw_provider_response
+                            else coalesce(raw_provider_response, '{}'::jsonb)
+                                 || jsonb_build_object('refund_settlement', cast(:provider_data as jsonb))
+                        end,
+                        updated_at = timezone('utc', now())
+                    where provider_reference = :provider_reference
+                    returning *
+                    """
+                ),
+                {
+                    "provider_reference": provider_reference,
+                    "refund_status": refund_status,
+                    "provider_data": (
+                        json.dumps(provider_data, default=str)
+                        if provider_data is not None
+                        else None
+                    ),
+                },
+            )
+            .mappings()
+            .first()
+        )
+        if not row:
+            return None, False
+
+        booking_row = None
+        if refund_status == "refunded":
+            booking_row = db.session.execute(
+                text(
+                    """
+                    update public.bookings
+                    set payment_status = 'refunded',
+                        updated_at = timezone('utc', now())
+                    where id = cast(:booking_id as uuid)
+                    returning id
+                    """
+                ),
+                {"booking_id": str(row["booking_id"])},
+            ).first()
         return dict(row), booking_row is not None

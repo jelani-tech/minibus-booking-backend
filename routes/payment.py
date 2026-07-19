@@ -11,6 +11,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from application.api_serializers import payment_row_to_api
 from infrastructure.supabase_write_repositories import (
+    REFUND_STATUSES,
     SETTLED_SUCCESS_STATUSES,
     SupabaseBookingRepository,
     SupabasePaymentRepository,
@@ -76,6 +77,15 @@ def settle_payment_from_provider(reference, provider_data, source):
         return payment['status']
 
     current_status = (payment.get('status') or '').lower()
+    if current_status in REFUND_STATUSES:
+        # Une redelivrance d'evenement de PAIEMENT ne doit jamais ecraser un
+        # etat de remboursement (ni son raw_provider_response, qui contient les
+        # details du refund).
+        logger.info(
+            f"Payment settlement ({source}): reference '{reference}' is in refund state "
+            f"'{current_status}', delivery ignored"
+        )
+        return current_status
     if current_status in SETTLED_SUCCESS_STATUSES:
         logger.info(
             f"Payment settlement ({source}): reference '{reference}' already settled as success, "
@@ -116,6 +126,94 @@ def settle_payment_from_provider(reference, provider_data, source):
     logger.info(
         f"Payment settlement ({source}): reference '{reference}' settled as '{target_status}' "
         f"(booking_id={payment.get('booking_id')}, booking_updated={booking_updated})"
+    )
+    return target_status
+
+
+REFUND_REFERENCE_PREFIX = 'RF-'
+
+
+def settle_refund_from_provider(reference, provider_data, source):
+    """Applique le resultat d'un virement de remboursement JEKO (webhook
+    transaction.completed avec transactionType=transfer).
+
+    La reference du virement est deterministe : RF-{reference du paiement}.
+    Regles :
+    - un paiement deja 'refunded' n'est jamais retrograde ;
+    - 'refund_required' + success tardif -> upgrade vers 'refunded' (reprise
+      manuelle reussie) ;
+    - un statut encore 'success' est accepte (le webhook a gagne la course
+      contre mark_refund : le prefixe RF- prouve que le virement vient de nous) ;
+    - montant verifie avant de confirmer, mismatch -> refund_required (manuel).
+
+    Retourne le statut final du paiement, ou None si la reference est inconnue.
+    """
+    if not reference.startswith(REFUND_REFERENCE_PREFIX):
+        logger.warning(
+            f"Refund settlement ({source}): transfer reference '{reference}' does not "
+            f"match the {REFUND_REFERENCE_PREFIX} pattern, ignored"
+        )
+        return None
+
+    original_reference = reference[len(REFUND_REFERENCE_PREFIX):]
+    payment = payment_repository.get_by_reference(original_reference, for_update=True)
+    if not payment:
+        logger.warning(
+            f"Refund settlement ({source}): unknown payment reference "
+            f"'{original_reference}', nothing to update"
+        )
+        return None
+
+    provider_status = (provider_data.get('status') or '').lower()
+    if provider_status in PROVIDER_SUCCESS_STATUSES:
+        target_status = 'refunded'
+    elif provider_status in PROVIDER_FAILURE_STATUSES:
+        target_status = 'refund_required'
+    else:
+        logger.info(
+            f"Refund settlement ({source}): non-final transfer status '{provider_status}' "
+            f"for reference '{reference}', ignored"
+        )
+        return payment['status']
+
+    current_status = (payment.get('status') or '').lower()
+    if current_status == 'refunded':
+        logger.info(
+            f"Refund settlement ({source}): reference '{original_reference}' already "
+            f"refunded, '{provider_status}' delivery ignored"
+        )
+        return current_status
+    if current_status == target_status:
+        logger.info(
+            f"Refund settlement ({source}): reference '{original_reference}' already "
+            f"'{target_status}', duplicate delivery ignored"
+        )
+        return current_status
+
+    if target_status == 'refunded':
+        expected_amount = int(round(float(payment['amount']) * 100))
+        received_amount = provider_data.get('amount')
+        if received_amount is not None and received_amount != expected_amount:
+            logger.error(
+                f"Refund settlement ({source}): amount mismatch for reference "
+                f"'{original_reference}' (expected {expected_amount}, received "
+                f"{received_amount}), flagged for manual review"
+            )
+            target_status = 'refund_required'
+
+    _, booking_updated = payment_repository.settle_refund_by_reference(
+        original_reference, target_status, provider_data
+    )
+    db.session.commit()
+    if target_status == 'refund_required':
+        logger.error(
+            f"Refund settlement ({source}): reference '{original_reference}' requires "
+            f"MANUAL processing (booking_id={payment.get('booking_id')})"
+        )
+    logger.info(
+        f"Refund settlement ({source}): reference '{original_reference}' settled as "
+        f"'{target_status}' (booking_id={payment.get('booking_id')}, "
+        f"booking_updated={booking_updated})"
     )
     return target_status
 
@@ -167,8 +265,20 @@ def _initiate_jeko(booking, payment_method):
     conserve dans raw_provider_response['provider_payment_id'].
     """
     reference = f"JEKO-{uuid4().hex.upper()}"
-    base_url = current_app.config.get('PAYMENT_PUBLIC_BASE_URL') or ''
-    callback_url = f"{base_url}/api/payments/callback?provider=jeko&reference={reference}"
+    deeplink = current_app.config.get('BOOKING_DEEPLINK_CALLBACK') or ''
+    if deeplink:
+        # Retour de checkout directement dans l'app mobile, sans page web
+        # intermédiaire. L'app déclenche alors elle-même la vérification via
+        # GET /api/payments/callback puis polle le statut : booking_id lui evite
+        # d'avoir a retrouver la reservation depuis la reference.
+        separator = '&' if '?' in deeplink else '?'
+        callback_url = (
+            f"{deeplink}{separator}provider=jeko&reference={reference}"
+            f"&booking_id={booking['booking_id']}"
+        )
+    else:
+        base_url = current_app.config.get('PAYMENT_PUBLIC_BASE_URL') or ''
+        callback_url = f"{base_url}/api/payments/callback?provider=jeko&reference={reference}"
     payment_response = JekoService().initialize_payment(
         amount_cents=int(round(float(booking['total_price']) * 100)),
         reference=reference,
@@ -352,7 +462,10 @@ def jeko_payment_webhook():
     details = payload.get('transactionDetails') or {}
     reference = details.get('reference')
     status = normalize_jeko_status(payload.get('status'))
-    logger.info(f"JEKO webhook received : reference={reference}, status={status}")
+    transaction_type = (payload.get('transactionType') or 'payment').lower()
+    logger.info(
+        f"JEKO webhook received : type={transaction_type}, reference={reference}, status={status}"
+    )
 
     try:
         if not reference:
@@ -367,7 +480,11 @@ def jeko_payment_webhook():
             'reference': reference,
             'raw': payload,
         }
-        settle_payment_from_provider(reference, normalized, source='jeko-webhook')
+        if transaction_type == 'transfer':
+            # Virement sortant = remboursement d'annulation (reference RF-...).
+            settle_refund_from_provider(reference, normalized, source='jeko-webhook')
+        else:
+            settle_payment_from_provider(reference, normalized, source='jeko-webhook')
         return jsonify({'message': 'Webhook processed successfully'}), 200
 
     except Exception as e:

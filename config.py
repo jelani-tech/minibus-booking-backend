@@ -57,3 +57,15 @@ class Config:
     # JEKO à l'initiation (ex: https://minibus-booking.onrender.com).
     PAYMENT_PUBLIC_BASE_URL = (os.environ.get('PAYMENT_PUBLIC_BASE_URL') or '').rstrip('/')
 
+    # Fenêtre d'annulation : un client peut annuler sa réservation jusqu'à
+    # N minutes avant le départ du trip.
+    BOOKING_CANCELLATION_CUTOFF_MINUTES = int(
+        os.environ.get('BOOKING_CANCELLATION_CUTOFF_MINUTES') or 60
+    )
+
+    # Deep link mobile utilisé comme successUrl/errorUrl JEKO
+    # (ex: jelani://payment-callback) : la fin du checkout ramène directement
+    # dans l'app, sans page web intermédiaire. Vide = URLs de callback backend
+    # actuelles (page HTML).
+    BOOKING_DEEPLINK_CALLBACK = os.environ.get('BOOKING_DEEPLINK_CALLBACK') or ''
+

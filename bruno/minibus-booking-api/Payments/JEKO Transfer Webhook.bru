@@ -1,0 +1,50 @@
+meta {
+  name: JEKO Transfer Webhook
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/payments/jeko/webhook
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Jeko-Signature: {{jekoSignature}}
+}
+
+body:json {
+  {
+    "id": "txn_1234567890",
+    "status": "success",
+    "amount": { "amount": 10000, "currency": "XOF" },
+    "fees": { "amount": 150, "currency": "XOF" },
+    "transactionType": "transfer",
+    "transactionDetails": {
+      "id": "tr_abc123def456",
+      "reference": "RF-JEKO-XXXXXXXXXXXXXXXX"
+    }
+  }
+}
+
+docs {
+  # JEKO Transfer Webhook (remboursement)
+
+  Même endpoint et même signature HMAC-SHA256 (header `Jeko-Signature`) que le
+  webhook de paiement, mais avec `transactionType: "transfer"` : confirme un
+  virement de remboursement émis lors d'une annulation.
+
+  `transactionDetails.reference` doit être `RF-<référence du paiement>` (la
+  référence déterministe générée par le backend à l'annulation).
+
+  Effets :
+  - `status: "success"` -> payments.status = refunded,
+    bookings.payment_status = refunded
+  - `status: "error"` -> payments.status = refund_required (traitement manuel)
+
+  Signature à calculer sur le corps exact :
+
+      echo -n '<corps json>' | openssl dgst -sha256 -hmac "$JEKO_WEBHOOK_SECRET"
+}

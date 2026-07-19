@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from loguru import logger
 
@@ -6,12 +6,15 @@ from application.api_serializers import booking_row_to_api
 from infrastructure.supabase_write_repositories import (
     SupabaseBookingRepository,
     SupabaseCustomerRepository,
+    SupabasePaymentRepository,
 )
 from models.public import db
+from services.refund_service import process_refund_for_cancellation
 
 booking_bp = Blueprint('booking', __name__, url_prefix='/api/bookings')
 booking_repository = SupabaseBookingRepository()
 customer_repository = SupabaseCustomerRepository()
+payment_repository = SupabasePaymentRepository()
 
 
 @booking_bp.route('', methods=['POST'])
@@ -128,14 +131,26 @@ def cancel_booking(booking_id):
     customer_id = get_jwt_identity()
     try:
         logger.info(f"Cancelling booking_id={booking_id} (customer_id={customer_id})")
-        booking = booking_repository.cancel(booking_id, customer_id)
+        booking = booking_repository.cancel(
+            booking_id,
+            customer_id,
+            cutoff_minutes=current_app.config.get('BOOKING_CANCELLATION_CUTOFF_MINUTES', 60),
+        )
+        # L'annulation est rendue durable AVANT le remboursement : un echec du
+        # refund ne doit jamais de-annuler la reservation.
         db.session.commit()
 
         logger.info(f"Booking cancelled successfully: booking_id={booking_id}")
 
+        refund = process_refund_for_cancellation(booking, payment_repository)
+
+        # Re-fetch : payment_status peut avoir change si le virement a ete
+        # confirme de maniere synchrone.
+        booking = booking_repository.get(booking_id) or booking
         return jsonify({
             'message': 'Booking cancelled successfully',
-            'booking': booking_row_to_api(booking)
+            'booking': booking_row_to_api(booking),
+            'refund': refund
         }), 200
 
     except PermissionError as e:
