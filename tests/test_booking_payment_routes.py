@@ -19,6 +19,11 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
     def setUp(self):
         from models.public import db
 
+        # Provider par défaut déterministe, indépendant du .env local (qui peut
+        # être en PAYMENT_PROVIDER=jeko) : les tests JEKO posent explicitement
+        # leur config via use_jeko_provider.
+        self.app.config["PAYMENT_PROVIDER"] = "paystack"
+
         with self.app.app_context():
             db.session.execute(
                 db.text(

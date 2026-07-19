@@ -385,7 +385,7 @@ CALLBACK_HTML = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<title>JELANI - Paiement</title></head>'
     '<body style="font-family: sans-serif; text-align: center; padding: 48px 16px;">'
-    '<p>Paiement trait&eacute;, vous pouvez fermer cette fen&ecirc;tre.</p>'
+    '<p>Votre r&eacute;servation est valid&eacute;e, vous pouvez fermer cette fen&ecirc;tre.</p>'
     '</body></html>'
 )
 
