@@ -24,7 +24,8 @@ class Config:
     AUTO_UPGRADE_DB = os.environ.get('AUTO_UPGRADE_DB', 'false').lower() == 'true'
     LEGACY_SCHEMA_BOOTSTRAP = os.environ.get('LEGACY_SCHEMA_BOOTSTRAP', 'false').lower() == 'true'
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
-    JWT_ACCESS_TOKEN_EXPIRES = 86400  # 24 hours
+    JWT_ACCESS_TOKEN_EXPIRES = 3600  # 1 hour
+    REFRESH_TOKEN_EXPIRES_DAYS = int(os.environ.get('REFRESH_TOKEN_EXPIRES_DAYS', '30'))
     
     # Payment service API keys
     WAVE_API_KEY = os.environ.get('WAVE_API_KEY') or ''

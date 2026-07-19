@@ -23,3 +23,19 @@ class PasswordReset(db.Model):
             'used': self.used,
             'created_at': self.created_at.isoformat()
         }
+
+
+class RefreshToken(db.Model):
+    __tablename__ = 'refresh_tokens'
+    __table_args__ = {'schema': 'auth'}
+
+    id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    customer_id = db.Column(db.UUID(as_uuid=True), db.ForeignKey('public.customers.id'), nullable=False, index=True)
+    token_hash = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    replaced_by_id = db.Column(db.UUID(as_uuid=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    def is_active(self):
+        return self.revoked_at is None and self.expires_at > datetime.now(timezone.utc)

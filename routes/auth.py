@@ -1,8 +1,9 @@
 import uuid
+import hashlib
 from datetime import datetime, timedelta, timezone
 import secrets
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required
 from sqlalchemy import UUID
 from sqlalchemy.exc import IntegrityError
@@ -13,6 +14,7 @@ from infrastructure.supabase_write_repositories import (
     SupabaseAuthRepository,
     SupabaseCustomerRepository,
 )
+from models.auth import RefreshToken
 from models.public import db
 from services.email_service import BrevoEmailService
 
@@ -21,6 +23,53 @@ auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 auth_repository = SupabaseAuthRepository()
 customer_repository = SupabaseCustomerRepository()
 email_service = BrevoEmailService()
+
+
+def _hash_refresh_token(token: str) -> str:
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def _create_refresh_token(customer_id) -> str:
+    raw_token = secrets.token_urlsafe(64)
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        days=current_app.config.get('REFRESH_TOKEN_EXPIRES_DAYS', 30)
+    )
+    db.session.add(RefreshToken(
+        customer_id=customer_id,
+        token_hash=_hash_refresh_token(raw_token),
+        expires_at=expires_at,
+    ))
+    return raw_token
+
+
+def _issue_tokens(customer_id) -> tuple[str, str]:
+    return (
+        create_access_token(identity=str(customer_id)),
+        _create_refresh_token(customer_id),
+    )
+
+
+def _find_active_refresh_token(raw_token: str) -> RefreshToken | None:
+    token_hash = _hash_refresh_token(raw_token)
+    token_row = RefreshToken.query.filter_by(
+        token_hash=token_hash,
+        revoked_at=None,
+    ).first()
+    if not token_row or token_row.expires_at <= datetime.now(timezone.utc):
+        return None
+    return token_row
+
+
+def _revoke_refresh_token(token_row: RefreshToken, replaced_by_id=None) -> None:
+    token_row.revoked_at = datetime.now(timezone.utc)
+    token_row.replaced_by_id = replaced_by_id
+
+
+def _revoke_customer_refresh_tokens(customer_id) -> None:
+    RefreshToken.query.filter_by(
+        customer_id=customer_id,
+        revoked_at=None,
+    ).update({'revoked_at': datetime.now(timezone.utc)})
 
 
 def _mask_email(email: str) -> str:
