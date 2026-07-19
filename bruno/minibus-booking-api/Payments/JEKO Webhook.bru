@@ -1,0 +1,48 @@
+meta {
+  name: JEKO Webhook
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/payments/jeko/webhook
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Jeko-Signature: {{jekoSignature}}
+}
+
+body:json {
+  {
+    "id": "txn_1234567890",
+    "status": "success",
+    "amount": { "amount": 10000, "currency": "XOF" },
+    "fees": { "amount": 150, "currency": "XOF" },
+    "transactionType": "payment",
+    "transactionDetails": {
+      "id": "pr_abc123def456",
+      "reference": "JEKO-XXXXXXXXXXXXXXXX"
+    }
+  }
+}
+
+docs {
+  # JEKO Webhook
+
+  Endpoint webhook JEKO (événement transaction.completed).
+  Authentifié par signature HMAC-SHA256 du corps brut avec JEKO_WEBHOOK_SECRET,
+  transmise dans le header `Jeko-Signature`.
+
+  La signature doit être calculée sur le corps EXACT envoyé (octet près) :
+
+      echo -n '<corps json>' | openssl dgst -sha256 -hmac "$JEKO_WEBHOOK_SECRET"
+
+  Remplacez `transactionDetails.reference` par la référence JEKO-... d'un
+  paiement en attente, et `amount.amount` par le montant en sous-unités
+  (total_price × 100).
+
+  Statuts : success (paiement réussi) / error (échec).
+}

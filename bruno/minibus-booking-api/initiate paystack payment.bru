@@ -1,0 +1,27 @@
+meta {
+  name: initiate paystack payment
+  type: http
+  seq: 7
+}
+
+post {
+  url: https://api.paystack.co/transaction/initialize
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: sk_test_d74c9c0ec103296fc83dffa22cf5bd7318f3c90e
+}
+
+body:json {
+  {
+    "amount": 200000.00,
+    "email": "ruthboua@gmail.com"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

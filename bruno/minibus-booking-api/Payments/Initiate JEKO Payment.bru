@@ -1,0 +1,42 @@
+meta {
+  name: Initiate JEKO Payment
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/payments/initiate
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "booking_id": "770f6090-0f4c-4fc2-88f2-6b3111e58496",
+    "payment_method": "wave"
+  }
+}
+
+docs {
+  # Initiate JEKO Payment
+
+  Initie un paiement via JEKO (nécessite PAYMENT_PROVIDER=jeko côté serveur).
+  Nécessite un token JWT valide.
+
+  `payment_method` est obligatoire quand JEKO est le provider actif :
+  - wave
+  - orange
+  - mtn
+  - moov
+  - djamo
+
+  La réponse contient `payment_url` (redirectUrl JEKO) vers laquelle rediriger
+  le client, et `transaction_id` (référence JEKO-... générée par le backend).
+
+  Remplacez `booking_id` par l'ID d'une réservation en attente.
+}
