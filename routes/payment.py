@@ -16,8 +16,14 @@ from infrastructure.supabase_write_repositories import (
     SupabasePaymentRepository,
 )
 from models.public import db
+from services.jeko_service import (
+    JEKO_PAYMENT_METHODS,
+    JekoService,
+    normalize_jeko_status,
+)
 from services.paystack_service import PaystackService
 from loguru import logger
+from uuid import uuid4
 
 
 payment_bp = Blueprint('payment', __name__, url_prefix='/api/payments')
@@ -31,7 +37,9 @@ PAYMENT_STATUS_SUCCESS = 'success'
 PAYMENT_STATUS_FAILED = 'failed'
 PAYMENT_STATUS_PENDING = 'pending'
 
-# Statuts renvoyes par Paystack (webhook et Verify API).
+# Vocabulaire normalise des statuts provider consommes par
+# settle_payment_from_provider : Paystack les renvoie tels quels (webhook et
+# Verify API) ; ceux de JEKO sont normalises en amont via normalize_jeko_status.
 PROVIDER_SUCCESS_STATUSES = ('success',)
 PROVIDER_FAILURE_STATUSES = ('failed', 'abandoned')
 
@@ -116,8 +124,6 @@ def is_mock_payment_enabled() -> bool:
     return current_app.config.get("APP_ENV") == "development" or current_app.debug
 
 
-# Adresse factice envoyee par les anciennes versions de l'app mobile
-# quand l'utilisateur n'avait pas d'email : a ignorer.
 PLACEHOLDER_PAYMENT_EMAIL = 'email@email.com'
 
 
@@ -137,6 +143,40 @@ def resolve_payment_email(booking, requested_email, customer_id) -> str:
     if requested_email == PLACEHOLDER_PAYMENT_EMAIL:
         requested_email = None
     return account_email or requested_email or build_fallback_payment_email(customer_id)
+
+
+def _initiate_paystack(booking, payment_email):
+    """Initie un paiement Paystack. Retourne (reference, payment_url, raw_response)."""
+    payment_response = PaystackService().initialize_payment(
+        amount=float(booking['total_price']) * 100,
+        email=payment_email,
+    )
+    return (
+        payment_response.get('reference'),
+        payment_response.get('authorization_url'),
+        payment_response,
+    )
+
+
+def _initiate_jeko(booking, payment_method):
+    """Initie un paiement JEKO. Retourne (reference, payment_url, raw_response).
+
+    La reference est generee par nous (exigence JEKO), nouvelle a chaque
+    tentative pour ne jamais declencher le 409 duplicate-reference. L'id de
+    payment request JEKO (seule cle de verification acceptee par leur API) est
+    conserve dans raw_provider_response['provider_payment_id'].
+    """
+    reference = f"JEKO-{uuid4().hex.upper()}"
+    base_url = current_app.config.get('PAYMENT_PUBLIC_BASE_URL') or ''
+    callback_url = f"{base_url}/api/payments/callback?provider=jeko&reference={reference}"
+    payment_response = JekoService().initialize_payment(
+        amount_cents=int(round(float(booking['total_price']) * 100)),
+        reference=reference,
+        payment_method=payment_method,
+        success_url=callback_url,
+        error_url=callback_url,
+    )
+    return reference, payment_response.get('payment_url'), payment_response
 
 
 @payment_bp.route('/initiate', methods=['POST'])
@@ -175,24 +215,35 @@ def initiate_payment():
             return jsonify({'error': 'Payment already completed'}), 400
 
 
-        payment_email = resolve_payment_email(booking, data.get('payment_email'), customer_id)
-
-        service = PaystackService()
-        payment_response = service.initialize_payment(
-            amount=float(booking['total_price']) * 100,
-            email=payment_email,
-        )
-        provider_reference = payment_response.get('reference')
-        payment_url = payment_response.get('authorization_url')
+        provider_name = (current_app.config.get('PAYMENT_PROVIDER') or 'paystack').lower()
+        if provider_name == 'jeko':
+            payment_method = (data.get('payment_method') or '').lower()
+            if payment_method not in JEKO_PAYMENT_METHODS:
+                logger.warning(
+                    f"Payment initiation rejected: invalid payment_method "
+                    f"'{payment_method}' ({log_context})"
+                )
+                return jsonify({
+                    'error': 'payment_method is required and must be one of: '
+                             + ', '.join(JEKO_PAYMENT_METHODS)
+                }), 400
+            provider_reference, payment_url, raw_response = _initiate_jeko(
+                booking, payment_method
+            )
+        else:
+            payment_email = resolve_payment_email(booking, data.get('payment_email'), customer_id)
+            provider_reference, payment_url, raw_response = _initiate_paystack(
+                booking, payment_email
+            )
 
         payment = payment_repository.create_or_update(
             booking_id=booking_id,
             customer_id=customer_id,
             amount=booking['total_price'],
-            provider='paystack',
+            provider=provider_name,
             provider_reference=provider_reference,
             provider_payment_url=payment_url,
-            raw_provider_response=payment_response,
+            raw_provider_response=raw_response,
         )
         db.session.commit()
 
@@ -263,7 +314,69 @@ def payment_webhook():
         return jsonify({'error': str(e)}), 500
 
 
-# Page renvoyee au navigateur/WebView apres redirection Paystack. L'app mobile
+@payment_bp.route('/jeko/webhook', methods=['POST'])
+def jeko_payment_webhook():
+    """Webhook JEKO (public, authentifie par signature HMAC).
+
+    La signature est un HMAC-SHA256 du corps brut avec le secret webhook JEKO,
+    transmis dans le header Jeko-Signature. Evenement unique
+    transaction.completed ; la reference (generee par nous a l'initiation) est
+    dans transactionDetails.reference et le montant en sous-unites dans
+    amount.amount. Tout evenement signe recoit un 200 (y compris reference
+    inconnue ou doublon). Reste actif meme si PAYMENT_PROVIDER=paystack, pour
+    regler les paiements JEKO en cours.
+    """
+    raw_body = request.get_data()
+    secret_key = current_app.config.get('JEKO_WEBHOOK_SECRET') or ''
+    signature = request.headers.get('Jeko-Signature') or ''
+
+    if not secret_key:
+        logger.error("JEKO webhook rejected: JEKO_WEBHOOK_SECRET is not configured")
+        return jsonify({'error': 'Webhook not configured'}), 401
+
+    expected_signature = hmac.new(
+        secret_key.encode('utf-8'), raw_body, hashlib.sha256
+    ).hexdigest()
+    if not signature or not hmac.compare_digest(expected_signature, signature):
+        logger.warning("JEKO webhook rejected: missing or invalid Jeko-Signature")
+        return jsonify({'error': 'Invalid signature'}), 401
+
+    try:
+        payload = json.loads(raw_body) if raw_body else {}
+    except ValueError:
+        logger.warning("JEKO webhook rejected: body is not valid JSON")
+        return jsonify({'error': 'Invalid payload'}), 400
+    if not isinstance(payload, dict):
+        payload = {}
+
+    details = payload.get('transactionDetails') or {}
+    reference = details.get('reference')
+    status = normalize_jeko_status(payload.get('status'))
+    logger.info(f"JEKO webhook received : reference={reference}, status={status}")
+
+    try:
+        if not reference:
+            logger.info("JEKO webhook ignored: no reference")
+            return jsonify({'message': 'Event ignored'}), 200
+
+        amount = payload.get('amount') or {}
+        normalized = {
+            'status': status,
+            'amount': int(amount['amount']) if amount.get('amount') is not None else None,
+            'currency': amount.get('currency'),
+            'reference': reference,
+            'raw': payload,
+        }
+        settle_payment_from_provider(reference, normalized, source='jeko-webhook')
+        return jsonify({'message': 'Webhook processed successfully'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception(f"Error processing JEKO webhook (reference={reference}): {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Page renvoyee au navigateur/WebView apres redirection Paystack ou JEKO. L'app mobile
 # detecte la fin du checkout par le chemin /api/payments/callback puis polle le
 # statut : le contenu de cette page n'est affiche que brievement.
 CALLBACK_HTML = (
@@ -277,19 +390,55 @@ CALLBACK_HTML = (
 )
 
 
+def _verify_and_settle_jeko_callback(reference):
+    """Verifie un paiement JEKO au retour du checkout et le regle si necessaire.
+
+    L'API JEKO ne permet la verification que par id de payment request,
+    conserve dans raw_provider_response a l'initiation. Une fois le paiement
+    regle (par le webhook, qui ecrase raw_provider_response), la verification
+    est inutile : on rend simplement la page.
+    """
+    payment = payment_repository.get_by_reference(reference)
+    if not payment:
+        logger.warning(f"JEKO callback: unknown reference '{reference}', nothing to verify")
+        return
+    if (payment.get('status') or '').lower() != PAYMENT_STATUS_PENDING:
+        logger.info(
+            f"JEKO callback: reference '{reference}' already settled "
+            f"as '{payment.get('status')}', skipping verification"
+        )
+        return
+    payment_id = (payment.get('raw_provider_response') or {}).get('provider_payment_id')
+    if not payment_id:
+        logger.error(
+            f"JEKO callback: no provider_payment_id stored for reference "
+            f"'{reference}', cannot verify"
+        )
+        return
+    verification = JekoService().verify_payment(payment_id)
+    settle_payment_from_provider(reference, verification, source='callback')
+
+
 @payment_bp.route('/callback', methods=['GET'])
 def payment_callback():
-    """Redirection navigateur apres le checkout Paystack (callback URL du dashboard).
+    """Redirection navigateur apres le checkout Paystack ou JEKO.
 
-    Les query params (?trxref=...&reference=...) viennent du client : ils ne font
-    pas foi. Le resultat est confirme via l'API Verify de Paystack, puis applique
-    avec les memes regles que le webhook. Repond toujours 200.
+    Paystack : callback URL du dashboard (?trxref=...&reference=...).
+    JEKO : successUrl/errorUrl construites a l'initiation
+    (?provider=jeko&reference=...).
+
+    Les query params viennent du client : ils ne font pas foi. Le resultat est
+    confirme via l'API de verification du provider, puis applique avec les memes
+    regles que le webhook. Repond toujours 200.
     """
     reference = request.args.get('reference') or request.args.get('trxref')
-    logger.info(f"Payment callback received (reference={reference})")
+    provider = (request.args.get('provider') or 'paystack').lower()
+    logger.info(f"Payment callback received (provider={provider}, reference={reference})")
     try:
         if not reference:
             logger.warning("Payment callback without reference, nothing to verify")
+        elif provider == 'jeko':
+            _verify_and_settle_jeko_callback(reference)
         else:
             verification = PaystackService().verify_payment(reference)
             settle_payment_from_provider(reference, verification, source='callback')

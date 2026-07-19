@@ -51,6 +51,42 @@ def _require_secrets(app):
             logger.info(f"{key} chargé (empreinte {fingerprint})")
 
 
+def _require_payment_provider_config(app):
+    """Valide la config du provider de paiement actif au démarrage.
+
+    Les clés JEKO ne sont exigées que si PAYMENT_PROVIDER=jeko (les webhooks des
+    deux providers restent actifs, mais seule l'initiation dépend du provider
+    actif). En production, une config incomplète empêche le démarrage ; en
+    développement, on tolère avec un avertissement.
+    """
+    is_prod = app.config.get('APP_ENV') != 'development'
+    provider = (app.config.get('PAYMENT_PROVIDER') or 'paystack').lower()
+
+    if provider not in ('paystack', 'jeko'):
+        raise RuntimeError(
+            f"PAYMENT_PROVIDER '{provider}' invalide : valeurs acceptées 'paystack' ou 'jeko'."
+        )
+
+    if provider == 'jeko':
+        required = (
+            'JEKO_API_KEY',
+            'JEKO_API_KEY_ID',
+            'JEKO_STORE_ID',
+            'JEKO_WEBHOOK_SECRET',
+            'PAYMENT_PUBLIC_BASE_URL',
+        )
+        missing = [key for key in required if not app.config.get(key)]
+        if missing:
+            message = (
+                f"PAYMENT_PROVIDER=jeko mais variables manquantes : {', '.join(missing)}."
+            )
+            if is_prod:
+                raise RuntimeError(f"{message} Refus de démarrer en production.")
+            logger.warning(message)
+
+    logger.info(f"Payment provider actif pour les initiations : {provider}")
+
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -84,6 +120,7 @@ def create_app():
     # Après init_db, qui réapplique la config : vérifie les secrets (et pose le
     # repli de dev) une fois que plus aucun from_object ne peut l'écraser.
     _require_secrets(app)
+    _require_payment_provider_config(app)
 
     # Multi-schema project (public/clients/partners):
     # include_schemas=True is required so Alembic autogenerate can resolve

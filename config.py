@@ -43,3 +43,17 @@ class Config:
     PAYSTACK_URL = os.environ.get('PAYSTACK_URL') or ''
     PAYMENT_EMAIL_DOMAIN = os.environ.get('PAYMENT_EMAIL_DOMAIN') or 'jelani.tech'
 
+    # Provider utilisé pour les NOUVELLES initiations de paiement ('paystack' ou
+    # 'jeko'). Les webhooks/callbacks des deux providers restent toujours actifs
+    # pour que les paiements en cours de l'autre provider soient réglés.
+    PAYMENT_PROVIDER = (os.environ.get('PAYMENT_PROVIDER') or 'paystack').lower()
+
+    JEKO_API_KEY = os.environ.get('JEKO_API_KEY') or ''
+    JEKO_API_KEY_ID = os.environ.get('JEKO_API_KEY_ID') or ''
+    JEKO_STORE_ID = os.environ.get('JEKO_STORE_ID') or ''
+    JEKO_WEBHOOK_SECRET = os.environ.get('JEKO_WEBHOOK_SECRET') or ''
+    JEKO_URL = os.environ.get('JEKO_URL') or 'https://api.jeko.africa/partner_api'
+    # Base publique de l'API, pour construire les successUrl/errorUrl exigées par
+    # JEKO à l'initiation (ex: https://minibus-booking.onrender.com).
+    PAYMENT_PUBLIC_BASE_URL = (os.environ.get('PAYMENT_PUBLIC_BASE_URL') or '').rstrip('/')
+
