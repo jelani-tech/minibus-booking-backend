@@ -63,9 +63,9 @@ class Config:
         os.environ.get('BOOKING_CANCELLATION_CUTOFF_MINUTES') or 60
     )
 
-    # Deep link mobile utilisé comme successUrl/errorUrl JEKO
-    # (ex: jelani://payment-callback) : la fin du checkout ramène directement
-    # dans l'app, sans page web intermédiaire. Vide = URLs de callback backend
-    # actuelles (page HTML).
+    # Deep link mobile (ex: jelani://payment-callback) vers lequel la page
+    # /api/payments/callback rebondit a la fin du checkout, pour ramener dans
+    # l'app. Il n'est jamais transmis au provider : JEKO n'accepte que des URLs
+    # http(s) comme successUrl/errorUrl. Vide = page HTML de callback seule.
     BOOKING_DEEPLINK_CALLBACK = os.environ.get('BOOKING_DEEPLINK_CALLBACK') or ''
 

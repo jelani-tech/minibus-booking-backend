@@ -743,11 +743,12 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         expected_callback = (
             f"{JEKO_TEST_PUBLIC_BASE_URL}/api/payments/callback"
             f"?provider=jeko&reference={payment['provider_reference']}"
+            f"&booking_id={booking['id']}"
         )
         self.assertEqual(call_kwargs["success_url"], expected_callback)
         self.assertEqual(call_kwargs["error_url"], expected_callback)
 
-    def test_initiate_jeko_payment_uses_deeplink_callback_when_configured(self):
+    def test_initiate_jeko_payment_never_sends_deeplink_to_jeko(self):
         headers = self.auth_headers()
         booking = self.create_booking()[0]
 
@@ -765,12 +766,41 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         self.assertEqual(response.status_code, 200)
         reference = response.get_json()["payment"]["provider_reference"]
         expected_callback = (
-            f"jelani://payment-callback?provider=jeko&reference={reference}"
+            f"{JEKO_TEST_PUBLIC_BASE_URL}/api/payments/callback"
+            f"?provider=jeko&reference={reference}"
             f"&booking_id={booking['id']}"
         )
         call_kwargs = mock_initialize.call_args.kwargs
         self.assertEqual(call_kwargs["success_url"], expected_callback)
         self.assertEqual(call_kwargs["error_url"], expected_callback)
+
+    def test_jeko_callback_page_redirects_to_deeplink_when_configured(self):
+        _, booking, payment = self.initiate_jeko_pending_payment()
+
+        original = self.app.config.get("BOOKING_DEEPLINK_CALLBACK")
+        self.addCleanup(
+            lambda: self.app.config.update(BOOKING_DEEPLINK_CALLBACK=original)
+        )
+        self.app.config["BOOKING_DEEPLINK_CALLBACK"] = "jelani://payment-callback"
+
+        with patch("routes.payment.JekoService") as mock_service:
+            mock_service.return_value.verify_payment.return_value = (
+                self.jeko_verification_data(payment)
+            )
+            response = self.client.get(
+                "/api/payments/callback",
+                query_string={
+                    "provider": "jeko",
+                    "reference": payment["provider_reference"],
+                    "booking_id": booking["id"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("jelani://payment-callback?", html)
+        self.assertIn(f"reference={payment['provider_reference']}", html)
+        self.assertIn(f"booking_id={booking['id']}", html)
 
     def test_initiate_jeko_payment_requires_valid_payment_method(self):
         headers = self.auth_headers()

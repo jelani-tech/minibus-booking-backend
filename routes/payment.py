@@ -5,6 +5,8 @@ import hmac
 import json
 import re
 import unicodedata
+from html import escape
+from urllib.parse import urlencode
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
@@ -265,20 +267,16 @@ def _initiate_jeko(booking, payment_method):
     conserve dans raw_provider_response['provider_payment_id'].
     """
     reference = f"JEKO-{uuid4().hex.upper()}"
-    deeplink = current_app.config.get('BOOKING_DEEPLINK_CALLBACK') or ''
-    if deeplink:
-        # Retour de checkout directement dans l'app mobile, sans page web
-        # intermédiaire. L'app déclenche alors elle-même la vérification via
-        # GET /api/payments/callback puis polle le statut : booking_id lui evite
-        # d'avoir a retrouver la reservation depuis la reference.
-        separator = '&' if '?' in deeplink else '?'
-        callback_url = (
-            f"{deeplink}{separator}provider=jeko&reference={reference}"
-            f"&booking_id={booking['booking_id']}"
-        )
-    else:
-        base_url = current_app.config.get('PAYMENT_PUBLIC_BASE_URL') or ''
-        callback_url = f"{base_url}/api/payments/callback?provider=jeko&reference={reference}"
+    # JEKO n'accepte que des URLs http(s) : on ne lui passe jamais le deep link
+    # mobile directement. Le retour de checkout arrive donc toujours sur
+    # /api/payments/callback, qui rebondit ensuite vers le deep link si
+    # BOOKING_DEEPLINK_CALLBACK est configure (booking_id evite a l'app d'avoir
+    # a retrouver la reservation depuis la reference).
+    base_url = current_app.config.get('PAYMENT_PUBLIC_BASE_URL') or ''
+    callback_url = (
+        f"{base_url}/api/payments/callback?provider=jeko&reference={reference}"
+        f"&booking_id={booking['booking_id']}"
+    )
     payment_response = JekoService().initialize_payment(
         amount_cents=int(round(float(booking['total_price']) * 100)),
         reference=reference,
@@ -500,11 +498,32 @@ CALLBACK_HTML = (
     '<!doctype html>'
     '<html lang="fr"><head><meta charset="utf-8">'
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
-    '<title>JELANI - Paiement</title></head>'
+    '<title>JELANI - Paiement</title>{redirect}</head>'
     '<body style="font-family: sans-serif; text-align: center; padding: 48px 16px;">'
     '<p>Votre r&eacute;servation est valid&eacute;e, vous pouvez fermer cette fen&ecirc;tre.</p>'
     '</body></html>'
 )
+
+
+def _build_callback_page(provider, reference, booking_id):
+    """Rend la page de fin de checkout, avec rebond vers le deep link si configure.
+
+    Les providers (JEKO en particulier) n'acceptent que des URLs http(s) comme
+    URL de retour : le deep link mobile ne peut donc pas leur etre transmis. On
+    le declenche depuis cette page a la place.
+    """
+    deeplink = current_app.config.get('BOOKING_DEEPLINK_CALLBACK') or ''
+    redirect = ''
+    if deeplink:
+        params = {'provider': provider}
+        if reference:
+            params['reference'] = reference
+        if booking_id:
+            params['booking_id'] = booking_id
+        separator = '&' if '?' in deeplink else '?'
+        target = f"{deeplink}{separator}{urlencode(params)}"
+        redirect = f'<meta http-equiv="refresh" content="0; url={escape(target, quote=True)}">'
+    return CALLBACK_HTML.format(redirect=redirect)
 
 
 def _verify_and_settle_jeko_callback(reference):
@@ -563,7 +582,8 @@ def payment_callback():
         db.session.rollback()
         logger.exception(f"Error processing payment callback (reference={reference}): {e}")
 
-    return CALLBACK_HTML, 200, {'Content-Type': 'text/html; charset=utf-8'}
+    page = _build_callback_page(provider, reference, request.args.get('booking_id'))
+    return page, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
 
 @payment_bp.route('/status/<uuid:booking_id>', methods=['GET'])
