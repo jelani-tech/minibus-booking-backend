@@ -11,6 +11,7 @@ from routes.trip import trip_bp
 from routes.booking import booking_bp
 from routes.payment import payment_bp
 from routes.lines import lines_bp
+from routes.wallet import wallet_bp
 
 from flask_migrate import Migrate, upgrade
 from models.public import db
@@ -145,6 +146,7 @@ def create_app():
     app.register_blueprint(booking_bp)
     app.register_blueprint(payment_bp)
     app.register_blueprint(lines_bp)
+    app.register_blueprint(wallet_bp)
 
     from routes.vehicles import vehicles_bp
     app.register_blueprint(vehicles_bp)
@@ -192,6 +194,50 @@ def create_app():
             raise SystemExit(1)
         from services.import_lines import import_lines_from_excel
         import_lines_from_excel(file_path=file)
+
+    @app.cli.command("wallet-audit")
+    @click.option(
+        "--expire-stale-topups",
+        is_flag=True,
+        help="Passe aussi en 'expired' les rechargements 'pending' trop anciens",
+    )
+    @click.option(
+        "--stale-after-minutes", default=60, show_default=True,
+        help="Age au-delà duquel un rechargement 'pending' est considéré abandonné",
+    )
+    def wallet_audit(expire_stale_topups, stale_after_minutes):
+        """Réconcilie les soldes wallet avec le registre des écritures.
+
+        Compare, pour chaque wallet, le solde matérialisé à la somme des
+        écritures. Ne corrige rien : un écart signale un bug de code, pas une
+        donnée à recoller en silence. À exécuter en tâche planifiée.
+
+        Usage:
+            flask wallet-audit
+            flask wallet-audit --expire-stale-topups
+        """
+        from infrastructure.supabase_write_repositories import SupabaseWalletRepository
+
+        repository = SupabaseWalletRepository()
+        divergences = repository.find_balance_divergences()
+
+        for row in divergences:
+            logger.error(
+                f"Wallet balance divergence: wallet_id={row['wallet_id']} "
+                f"customer_id={row['customer_id']} balance={row['balance']} "
+                f"computed={row['computed_balance']} difference={row['difference']}"
+            )
+
+        if expire_stale_topups:
+            expired = repository.expire_stale_topups(older_than_minutes=stale_after_minutes)
+            db.session.commit()
+            logger.info(f"Wallet audit: {expired} stale top-up(s) marked as expired")
+            click.echo(f"{expired} rechargement(s) expiré(s)")
+
+        if divergences:
+            click.echo(f"❌ {len(divergences)} wallet(s) en écart", err=True)
+            raise SystemExit(1)
+        click.echo("✅ Aucun écart entre les soldes et le registre")
 
     return app
 

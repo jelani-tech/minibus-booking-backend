@@ -15,8 +15,12 @@ from application.api_serializers import payment_row_to_api
 from infrastructure.supabase_write_repositories import (
     REFUND_STATUSES,
     SETTLED_SUCCESS_STATUSES,
+    TOPUP_REFERENCE_PREFIX,
+    InsufficientFundsError,
     SupabaseBookingRepository,
     SupabasePaymentRepository,
+    SupabaseWalletRepository,
+    WalletFrozenError,
 )
 from models.public import db
 from services.jeko_service import (
@@ -32,6 +36,7 @@ from uuid import uuid4
 payment_bp = Blueprint('payment', __name__, url_prefix='/api/payments')
 booking_repository = SupabaseBookingRepository()
 payment_repository = SupabasePaymentRepository()
+wallet_repository = SupabaseWalletRepository()
 
 
 # Statuts canoniques de payments.status, contrat avec l'app mobile
@@ -132,7 +137,122 @@ def settle_payment_from_provider(reference, provider_data, source):
     return target_status
 
 
+def settle_topup_from_provider(reference, provider_data, source):
+    """Applique un resultat provider a un rechargement wallet (reference TU-).
+
+    Calquee sur settle_payment_from_provider, memes garde-fous :
+    - idempotent, une redelivrance ne credite jamais deux fois (l'unicite de
+      la cle d'idempotence de l'ecriture est le vrai verrou) ;
+    - un rechargement deja en succes n'est jamais retrograde ;
+    - montant et devise verifies avant de crediter (le montant credite vient du
+      provider, jamais de celui que le client a demande).
+
+    Retourne le statut final du rechargement, ou None si la reference est
+    inconnue.
+    """
+    topup = wallet_repository.get_topup_by_reference(reference, for_update=True)
+    if not topup:
+        logger.warning(
+            f"Top-up settlement ({source}): unknown reference '{reference}', nothing to update"
+        )
+        return None
+
+    provider_status = (provider_data.get('status') or '').lower()
+    if provider_status in PROVIDER_SUCCESS_STATUSES:
+        target_status = 'success'
+    elif provider_status in PROVIDER_FAILURE_STATUSES:
+        target_status = 'failed'
+    else:
+        logger.info(
+            f"Top-up settlement ({source}): non-final provider status '{provider_status}' "
+            f"for reference '{reference}', ignored"
+        )
+        return topup['status']
+
+    current_status = (topup.get('status') or '').lower()
+    if current_status == 'success':
+        logger.info(
+            f"Top-up settlement ({source}): reference '{reference}' already credited, "
+            f"'{provider_status}' delivery ignored"
+        )
+        return current_status
+    if current_status == target_status:
+        logger.info(
+            f"Top-up settlement ({source}): reference '{reference}' already "
+            f"'{target_status}', duplicate delivery ignored"
+        )
+        return current_status
+
+    if target_status != 'success':
+        wallet_repository.settle_topup_by_reference(reference, 'failed', provider_data)
+        db.session.commit()
+        logger.info(
+            f"Top-up settlement ({source}): reference '{reference}' settled as 'failed' "
+            f"(topup_id={topup['id']}, customer_id={topup['customer_id']})"
+        )
+        return 'failed'
+
+    expected_amount = int(topup['amount']) * 100
+    expected_currency = (topup.get('currency') or 'XOF').upper()
+    received_amount = provider_data.get('amount')
+    received_currency = (provider_data.get('currency') or '').upper()
+    if received_amount != expected_amount or received_currency != expected_currency:
+        logger.error(
+            f"Top-up settlement ({source}): amount mismatch for reference '{reference}' "
+            f"(expected {expected_amount} {expected_currency}, "
+            f"received {received_amount} {received_currency}), wallet NOT credited"
+        )
+        return current_status
+
+    entry = wallet_repository.post_entry(
+        customer_id=topup['customer_id'],
+        direction='credit',
+        entry_type='topup',
+        amount=int(topup['amount']),
+        reference_type='topup',
+        reference_id=topup['id'],
+        idempotency_key=f"topup:{topup['id']}",
+        description=f"Rechargement {topup.get('provider_method') or topup['provider']}",
+        metadata={'provider': topup['provider'], 'reference': reference, 'source': source},
+    )
+    wallet_repository.settle_topup_by_reference(
+        reference, 'success', provider_data, credited=True
+    )
+    db.session.commit()
+
+    # Le plafond de solde est un garde-fou d'entree (§ 9.1), verifie avant
+    # d'encaisser : une fois l'argent pris par le provider, le refuser
+    # laisserait le client sans solde ni remboursement. On credite et on
+    # journalise pour revue.
+    max_balance = current_app.config.get('WALLET_MAX_BALANCE_XOF')
+    if max_balance and int(entry['balance_after']) > max_balance:
+        logger.warning(
+            f"Top-up settlement ({source}): wallet {entry['wallet_id']} now above the "
+            f"balance cap ({entry['balance_after']} > {max_balance}), credited anyway"
+        )
+
+    logger.info(
+        f"Top-up settlement ({source}): reference '{reference}' credited "
+        f"(topup_id={topup['id']}, customer_id={topup['customer_id']}, "
+        f"amount={topup['amount']}, balance={entry['balance_after']}, "
+        f"replayed={entry['replayed']})"
+    )
+    return 'success'
+
+
 REFUND_REFERENCE_PREFIX = 'RF-'
+
+
+def settle_reference_from_provider(reference, provider_data, source):
+    """Aiguille un evenement provider vers le bon reglement, sur le prefixe de
+    la reference — que nous emettons nous-memes :
+      RF- -> virement de remboursement sortant (chemin historique)
+      TU- -> rechargement wallet
+      le reste -> paiement de reservation
+    """
+    if reference.startswith(TOPUP_REFERENCE_PREFIX):
+        return settle_topup_from_provider(reference, provider_data, source)
+    return settle_payment_from_provider(reference, provider_data, source)
 
 
 def settle_refund_from_provider(reference, provider_data, source):
@@ -287,6 +407,70 @@ def _initiate_jeko(booking, payment_method):
     return reference, payment_response.get('payment_url'), payment_response
 
 
+WALLET_PAYMENT_METHOD = 'wallet'
+WALLET_PAYMENT_REFERENCE_PREFIX = 'WL-'
+
+
+def _pay_booking_from_wallet(booking, customer_id):
+    """Regle une reservation depuis le solde du wallet, de maniere synchrone.
+
+    Tout ou rien : le solde couvre le total, ou le paiement est refuse avec le
+    montant manquant. Dans une transaction unique : debit du wallet, insertion
+    du paiement (provider='wallet', deja 'success' : il n'y a pas de checkout a
+    attendre) et passage du booking a paid/confirmed.
+
+    Le paiement wallet cree bien une ligne public.payments : le contrat de
+    GET /api/payments/status/<booking_id> et le rapprochement comptable restent
+    inchanges.
+    """
+    booking_id = booking['booking_id']
+    amount = int(round(float(booking['total_price'])))
+
+    entry = wallet_repository.post_entry(
+        customer_id=customer_id,
+        direction='debit',
+        entry_type='booking_payment',
+        amount=amount,
+        reference_type='booking',
+        reference_id=booking_id,
+        idempotency_key=f"booking_payment:{booking_id}",
+        description=(
+            f"Réservation {booking.get('external_reference') or booking_id}"
+            f" · {booking.get('origin_name')} → {booking.get('destination_name')}"
+        ),
+        metadata={'trip_id': str(booking.get('trip_id') or '')},
+    )
+
+    payment = payment_repository.create_or_update(
+        booking_id=booking_id,
+        customer_id=customer_id,
+        amount=booking['total_price'],
+        provider=WALLET_PAYMENT_METHOD,
+        provider_reference=f"{WALLET_PAYMENT_REFERENCE_PREFIX}{booking_id}",
+        provider_payment_url=None,
+        raw_provider_response={
+            'wallet_entry_id': str(entry['id']),
+            'balance_after': int(entry['balance_after']),
+        },
+    )
+    # Meme regle que settle_by_reference : le booking n'est confirme que s'il
+    # est encore 'pending'.
+    settled, booking_updated = payment_repository.settle_by_reference(
+        provider_reference=payment['provider_reference'],
+        payment_status=PAYMENT_STATUS_SUCCESS,
+        raw_provider_response=payment.get('raw_provider_response'),
+    )
+    payment = settled or payment
+    db.session.commit()
+
+    logger.info(
+        f"Wallet payment settled (booking_id={booking_id}, customer_id={customer_id}, "
+        f"amount={amount}, balance={entry['balance_after']}, "
+        f"replayed={entry['replayed']}, booking_updated={booking_updated})"
+    )
+    return payment, entry
+
+
 @payment_bp.route('/initiate', methods=['POST'])
 @jwt_required()
 def initiate_payment():
@@ -322,6 +506,50 @@ def initiate_payment():
             logger.warning(f"Payment initiation rejected: payment already completed ({log_context})")
             return jsonify({'error': 'Payment already completed'}), 400
 
+        # Paiement depuis le solde : court-circuite le provider et regle tout de
+        # maniere synchrone, AVANT les branches JEKO/Paystack (donc sans
+        # dependre de PAYMENT_PROVIDER). L'app mobile garde un seul chemin de
+        # paiement et distingue les moyens par payment_method.
+        if (data.get('payment_method') or '').lower() == WALLET_PAYMENT_METHOD:
+            if not (
+                current_app.config.get('WALLET_ENABLED')
+                and current_app.config.get('WALLET_PAYMENT_ENABLED')
+            ):
+                logger.warning(f"Wallet payment rejected: feature disabled ({log_context})")
+                return jsonify({
+                    'error': 'Wallet payment is not available',
+                    'code': 'WALLET_DISABLED',
+                }), 400
+            try:
+                payment, entry = _pay_booking_from_wallet(booking, customer_id)
+            except InsufficientFundsError as e:
+                db.session.rollback()
+                logger.warning(
+                    f"Wallet payment rejected: insufficient funds ({log_context}, "
+                    f"balance={e.balance}, required={e.required})"
+                )
+                return jsonify({
+                    'error': 'Insufficient wallet balance',
+                    'code': e.code,
+                    'balance': e.balance,
+                    'required': e.required,
+                    'missing': e.missing,
+                }), e.http_status
+            except WalletFrozenError as e:
+                db.session.rollback()
+                logger.warning(f"Wallet payment rejected: wallet frozen ({log_context})")
+                return jsonify({'error': str(e), 'code': e.code}), e.http_status
+
+            return jsonify({
+                'message': 'Payment completed from wallet',
+                'payment': payment_row_to_api(payment),
+                'payment_url': None,
+                'transaction_id': payment.get('provider_reference'),
+                'wallet': {
+                    'balance': int(entry['balance_after']),
+                    'currency': 'XOF',
+                },
+            }), 200
 
         provider_name = (current_app.config.get('PAYMENT_PROVIDER') or 'paystack').lower()
         if provider_name == 'jeko':
@@ -413,7 +641,7 @@ def payment_webhook():
             logger.info(f"Payment webhook ignored: no reference (event={event})")
             return jsonify({'message': 'Event ignored'}), 200
 
-        settle_payment_from_provider(reference, data, source='webhook')
+        settle_reference_from_provider(reference, data, source='webhook')
         return jsonify({'message': 'Webhook processed successfully'}), 200
 
     except Exception as e:
@@ -482,7 +710,8 @@ def jeko_payment_webhook():
             # Virement sortant = remboursement d'annulation (reference RF-...).
             settle_refund_from_provider(reference, normalized, source='jeko-webhook')
         else:
-            settle_payment_from_provider(reference, normalized, source='jeko-webhook')
+            # Encaissement : rechargement wallet (TU-) ou paiement de reservation.
+            settle_reference_from_provider(reference, normalized, source='jeko-webhook')
         return jsonify({'message': 'Webhook processed successfully'}), 200
 
     except Exception as e:
@@ -505,7 +734,7 @@ CALLBACK_HTML = (
 )
 
 
-def _build_callback_page(provider, reference, booking_id):
+def _build_callback_page(provider, reference, booking_id, topup_id=None):
     """Rend la page de fin de checkout, avec rebond vers le deep link si configure.
 
     Les providers (JEKO en particulier) n'acceptent que des URLs http(s) comme
@@ -520,6 +749,8 @@ def _build_callback_page(provider, reference, booking_id):
             params['reference'] = reference
         if booking_id:
             params['booking_id'] = booking_id
+        if topup_id:
+            params['topup_id'] = topup_id
         separator = '&' if '?' in deeplink else '?'
         target = f"{deeplink}{separator}{urlencode(params)}"
         redirect = f'<meta http-equiv="refresh" content="0; url={escape(target, quote=True)}">'
@@ -527,32 +758,44 @@ def _build_callback_page(provider, reference, booking_id):
 
 
 def _verify_and_settle_jeko_callback(reference):
-    """Verifie un paiement JEKO au retour du checkout et le regle si necessaire.
+    """Verifie un encaissement JEKO au retour du checkout et le regle si besoin.
+
+    Vaut pour un paiement de reservation comme pour un rechargement wallet : la
+    ligne a regler est trouvee par le prefixe de la reference (TU- = topup).
 
     L'API JEKO ne permet la verification que par id de payment request,
-    conserve dans raw_provider_response a l'initiation. Une fois le paiement
+    conserve dans raw_provider_response a l'initiation. Une fois l'encaissement
     regle (par le webhook, qui ecrase raw_provider_response), la verification
     est inutile : on rend simplement la page.
     """
-    payment = payment_repository.get_by_reference(reference)
-    if not payment:
-        logger.warning(f"JEKO callback: unknown reference '{reference}', nothing to verify")
-        return
-    if (payment.get('status') or '').lower() != PAYMENT_STATUS_PENDING:
-        logger.info(
-            f"JEKO callback: reference '{reference}' already settled "
-            f"as '{payment.get('status')}', skipping verification"
+    is_topup = reference.startswith(TOPUP_REFERENCE_PREFIX)
+    if is_topup:
+        row = wallet_repository.get_topup_by_reference(reference)
+        label = 'top-up'
+    else:
+        row = payment_repository.get_by_reference(reference)
+        label = 'payment'
+
+    if not row:
+        logger.warning(
+            f"JEKO callback: unknown {label} reference '{reference}', nothing to verify"
         )
         return
-    payment_id = (payment.get('raw_provider_response') or {}).get('provider_payment_id')
+    if (row.get('status') or '').lower() != PAYMENT_STATUS_PENDING:
+        logger.info(
+            f"JEKO callback: {label} reference '{reference}' already settled "
+            f"as '{row.get('status')}', skipping verification"
+        )
+        return
+    payment_id = (row.get('raw_provider_response') or {}).get('provider_payment_id')
     if not payment_id:
         logger.error(
-            f"JEKO callback: no provider_payment_id stored for reference "
+            f"JEKO callback: no provider_payment_id stored for {label} reference "
             f"'{reference}', cannot verify"
         )
         return
     verification = JekoService().verify_payment(payment_id)
-    settle_payment_from_provider(reference, verification, source='callback')
+    settle_reference_from_provider(reference, verification, source='callback')
 
 
 @payment_bp.route('/callback', methods=['GET'])
@@ -577,12 +820,17 @@ def payment_callback():
             _verify_and_settle_jeko_callback(reference)
         else:
             verification = PaystackService().verify_payment(reference)
-            settle_payment_from_provider(reference, verification, source='callback')
+            settle_reference_from_provider(reference, verification, source='callback')
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Error processing payment callback (reference={reference}): {e}")
 
-    page = _build_callback_page(provider, reference, request.args.get('booking_id'))
+    page = _build_callback_page(
+        provider,
+        reference,
+        request.args.get('booking_id'),
+        request.args.get('topup_id'),
+    )
     return page, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
 

@@ -11,11 +11,16 @@ class PaystackService:
         self.payment_url = Config.PAYSTACK_URL
 
 
-    def initialize_payment(self, email, amount):
+    def initialize_payment(self, email, amount, reference=None, callback_url=None):
         """
         Initiate payment
         :param email: customer email
         :param amount: amount of payment
+        :param reference: référence imposée par nous (sinon Paystack en génère
+            une). Utilisée pour les rechargements wallet, dont l'aiguillage au
+            règlement repose sur le préfixe TU- de la référence.
+        :param callback_url: URL de retour après checkout (sinon celle du
+            dashboard Paystack)
         """
         try:
             headers = {
@@ -27,6 +32,10 @@ class PaystackService:
                 'amount': amount,
                 'email': email,
             }
+            if reference:
+                payload['reference'] = reference
+            if callback_url:
+                payload['callback_url'] = callback_url
 
             logger.info(f"Calling Paystack transaction/initialize (amount={amount}, email={email})")
 

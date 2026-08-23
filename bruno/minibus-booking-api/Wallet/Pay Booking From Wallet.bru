@@ -1,0 +1,43 @@
+meta {
+  name: Pay Booking From Wallet
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/payments/initiate
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "booking_id": "770f6090-0f4c-4fc2-88f2-6b3111e58496",
+    "payment_method": "wallet"
+  }
+}
+
+docs {
+  # Pay Booking From Wallet
+
+  Règle une réservation depuis le solde, sans quitter l'application. Même
+  endpoint que les autres moyens de paiement : seul `payment_method: "wallet"`
+  change. Le provider est court-circuité et tout est réglé de façon synchrone.
+
+  Tout ou rien : le solde couvre le total, ou le paiement est refusé.
+
+  Réponse 200 — noter `payment_url` à `null` : il n'y a rien à ouvrir côté
+  mobile. La réservation est immédiatement `confirmed` / `paid`, et `wallet`
+  porte le nouveau solde.
+
+  Réponse 402 INSUFFICIENT_FUNDS, avec `balance`, `required` et `missing` :
+  `missing` permet de proposer directement un rechargement du montant exact.
+
+  Nécessite WALLET_ENABLED=true et WALLET_PAYMENT_ENABLED=true côté serveur
+  (sinon 400 WALLET_DISABLED).
+}

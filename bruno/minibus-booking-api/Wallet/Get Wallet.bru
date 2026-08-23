@@ -1,0 +1,31 @@
+meta {
+  name: Get Wallet
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/wallet
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+docs {
+  # Get Wallet
+
+  Solde et statut du porte-monnaie du client authentifié. Le wallet est créé
+  à la volée au premier appel : la réponse est toujours 200, jamais 404.
+
+  Le solde est exprimé en **francs XOF entiers** : `"balance": 12500` signifie
+  12 500 F. Aucune sous-unité, aucun facteur caché.
+
+  `status` vaut `active` ou `frozen`. Un wallet gelé refuse les débits et les
+  rechargements, mais accepte toujours les crédits de remboursement.
+
+  Retourne 404 `WALLET_DISABLED` si WALLET_ENABLED=false côté serveur.
+}

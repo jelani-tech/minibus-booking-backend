@@ -242,6 +242,65 @@ create table payments (
 create index payments_booking_id_idx on payments (booking_id);
 create index payments_customer_id_idx on payments (customer_id);
 
+-- ============================================================
+-- Wallet client : porte-monnaie ferme (depot mobile money,
+-- paiement de reservation, recredit d'annulation).
+-- wallets       : solde courant, un par client
+-- wallet_entries: registre append-only des mouvements
+-- wallet_topups : cycle de vie des tentatives de rechargement
+-- Montants en bigint, francs entiers (le XOF n'a pas de subdivision).
+-- ============================================================
+create table wallets (
+    id            uuid primary key default gen_random_uuid(),
+    customer_id   uuid not null unique references customers(id) on delete restrict,
+    currency      char(3) not null default 'XOF',
+    balance       bigint  not null default 0 check (balance >= 0),
+    status        text    not null default 'active' check (status in ('active','frozen')),
+    created_at    timestamptz not null default timezone('utc', now()),
+    updated_at    timestamptz not null default timezone('utc', now())
+);
+
+create table wallet_entries (
+    id                  uuid primary key default gen_random_uuid(),
+    wallet_id           uuid not null references wallets(id) on delete restrict,
+    direction           text not null check (direction in ('credit','debit')),
+    entry_type          text not null check (entry_type in (
+                            'topup','booking_payment','booking_refund',
+                            'topup_reversal','adjustment','promo_credit')),
+    amount              bigint not null check (amount > 0),
+    balance_after       bigint not null,
+    reference_type      text check (reference_type in ('topup','booking','payment','manual')),
+    reference_id        uuid,
+    idempotency_key     text not null unique,
+    description         text,
+    metadata            jsonb,
+    created_at          timestamptz not null default timezone('utc', now())
+);
+
+create index ix_wallet_entries_wallet_created on wallet_entries (wallet_id, created_at desc);
+create index ix_wallet_entries_reference on wallet_entries (reference_type, reference_id);
+
+create table wallet_topups (
+    id                    uuid primary key default gen_random_uuid(),
+    wallet_id             uuid not null references wallets(id) on delete restrict,
+    customer_id           uuid not null references customers(id) on delete restrict,
+    amount                bigint not null check (amount > 0),
+    currency              char(3) not null default 'XOF',
+    provider              text not null,
+    provider_method       text,
+    provider_reference    text not null unique,
+    provider_payment_url  text,
+    status                text not null default 'pending'
+                            check (status in ('pending','success','failed','expired')),
+    raw_provider_response jsonb,
+    credited_at           timestamptz,
+    created_at            timestamptz not null default timezone('utc', now()),
+    updated_at            timestamptz not null default timezone('utc', now())
+);
+
+create index ix_wallet_topups_customer_created on wallet_topups (customer_id, created_at desc);
+create index ix_wallet_topups_status on wallet_topups (status) where status = 'pending';
+
 create or replace function set_updated_at()
 returns trigger
 language plpgsql
@@ -322,6 +381,56 @@ create trigger trg_lines_updated_at before update on lines for each row execute 
 create trigger trg_stops_updated_at before update on stops for each row execute function set_updated_at();
 create trigger trg_trips_updated_at before update on trips for each row execute function set_updated_at();
 create trigger trg_bookings_updated_at before update on bookings for each row execute function set_updated_at();
+create trigger trg_wallets_updated_at before update on wallets for each row execute function set_updated_at();
+create trigger trg_wallet_topups_updated_at before update on wallet_topups for each row execute function set_updated_at();
+
+-- Filet de securite : le solde resultant porte par chaque ecriture doit
+-- correspondre au solde du wallet plus ou moins le montant. BEFORE INSERT, donc
+-- avant la mise a jour de wallets.balance par post_entry().
+create or replace function wallet_entry_balance_guard()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+    current_balance bigint;
+    expected_balance bigint;
+begin
+    select balance into current_balance
+    from wallets
+    where id = new.wallet_id
+    for update;
+
+    if current_balance is null then
+        raise exception 'wallet % not found', new.wallet_id;
+    end if;
+
+    if new.direction = 'credit' then
+        expected_balance := current_balance + new.amount;
+    else
+        expected_balance := current_balance - new.amount;
+    end if;
+
+    if new.balance_after is distinct from expected_balance then
+        raise exception
+            'wallet_entries.balance_after % does not match expected % '
+            '(wallet %, balance %, % of %)',
+            new.balance_after, expected_balance, new.wallet_id,
+            current_balance, new.direction, new.amount;
+    end if;
+
+    if expected_balance < 0 then
+        raise exception 'wallet % would go negative (% - %)',
+            new.wallet_id, current_balance, new.amount;
+    end if;
+
+    return new;
+end;
+$$;
+
+create trigger wallet_entry_balance_guard
+    before insert on wallet_entries
+    for each row execute function wallet_entry_balance_guard();
 create trigger trg_trips_set_capacity_from_vehicle before insert or update on trips for each row execute function set_trip_capacity_from_vehicle();
 create trigger trg_bookings_recalculate_trip_capacity after insert or update or delete on bookings for each row execute function trg_recalculate_trip_capacity();
 
@@ -455,6 +564,9 @@ alter table trips enable row level security;
 alter table customers enable row level security;
 alter table bookings enable row level security;
 alter table payments enable row level security;
+alter table wallets enable row level security;
+alter table wallet_entries enable row level security;
+alter table wallet_topups enable row level security;
 
 create policy "Allow public read active lines" on lines for select using (status = 'active');
 create policy "Allow public read active stops" on stops for select using (status = 'active');

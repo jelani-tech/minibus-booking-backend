@@ -1,0 +1,48 @@
+meta {
+  name: Create Topup
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/wallet/topups
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+  ~Idempotency-Key: mobile-topup-0001
+}
+
+body:json {
+  {
+    "amount": 10000,
+    "payment_method": "wave"
+  }
+}
+
+docs {
+  # Create Topup
+
+  Démarre un rechargement et renvoie l'URL de checkout mobile money.
+
+  - `amount` : entier XOF, entre WALLET_MIN_TOPUP_XOF et WALLET_MAX_TOPUP_XOF
+  - `payment_method` : obligatoire si PAYMENT_PROVIDER=jeko
+    (wave, orange, mtn, moov, djamo)
+
+  La référence est émise par le backend, préfixée `TU-` : c'est ce préfixe qui
+  aiguille l'événement provider vers le crédit du wallet plutôt que vers le
+  règlement d'une réservation.
+
+  Rejeu : un rechargement `pending` de moins de 15 minutes pour le même client,
+  le même montant et la même méthode est réutilisé plutôt que dupliqué. L'en-tête
+  optionnel `Idempotency-Key` fait foi s'il est transmis.
+
+  Le wallet n'est **pas** crédité ici : il l'est au règlement (webhook signé ou
+  vérification au retour de checkout).
+
+  Codes d'erreur : 400 INVALID_AMOUNT / INVALID_PAYMENT_METHOD,
+  409 WALLET_FROZEN, 429 TOPUP_LIMIT_REACHED, 503 PROVIDER_UNAVAILABLE.
+}

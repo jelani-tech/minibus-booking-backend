@@ -1,0 +1,34 @@
+meta {
+  name: Get Topup Status
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/wallet/topups/00000000-0000-0000-0000-000000000000
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+docs {
+  # Get Topup Status
+
+  Statut d'un rechargement — c'est cet endpoint que l'app mobile polle après le
+  retour de checkout.
+
+  La réponse porte aussi le solde courant (`wallet.balance`), pour afficher le
+  nouveau solde sans second appel.
+
+  `status` : pending | success | failed | expired. `credited_at` est renseigné
+  seulement quand le wallet a effectivement été crédité.
+
+  403 FORBIDDEN si le rechargement appartient à un autre client, 404 NOT_FOUND
+  s'il n'existe pas.
+
+  Remplacez l'UUID de l'URL par celui rendu par « Create Topup ».
+}

@@ -177,6 +177,54 @@ def booking_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def wallet_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    """Le solde exposé est exactement le solde stocké : les montants wallet sont
+    des francs entiers (le XOF n'a pas de subdivision), aucune conversion ici.
+    Le ×100 attendu par JEKO et Paystack reste à la frontière provider."""
+    return {
+        "id": str(row["id"]),
+        "currency": row.get("currency"),
+        "balance": int(row["balance"]),
+        "status": row.get("status"),
+        "created_at": json_value(row.get("created_at")),
+        "updated_at": json_value(row.get("updated_at")),
+    }
+
+
+def wallet_entry_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    """Relevé en lecture seule : ni metadata ni données brutes provider."""
+    reference_id = row.get("reference_id")
+    return {
+        "id": str(row["id"]),
+        "direction": row.get("direction"),
+        "type": row.get("entry_type"),
+        "amount": int(row["amount"]),
+        "balance_after": int(row["balance_after"]),
+        "description": row.get("description"),
+        "reference": {
+            "type": row.get("reference_type"),
+            "id": str(reference_id) if reference_id else None,
+        },
+        "created_at": json_value(row.get("created_at")),
+    }
+
+
+def topup_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "amount": int(row["amount"]),
+        "currency": row.get("currency"),
+        "provider": row.get("provider"),
+        "payment_method": row.get("provider_method"),
+        "status": row.get("status"),
+        "reference": row.get("provider_reference"),
+        "payment_url": row.get("provider_payment_url"),
+        "credited_at": json_value(row.get("credited_at")),
+        "created_at": json_value(row.get("created_at")),
+        "updated_at": json_value(row.get("updated_at")),
+    }
+
+
 def payment_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
     status = row.get("status")
     return {

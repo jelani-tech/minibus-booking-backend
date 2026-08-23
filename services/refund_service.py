@@ -1,8 +1,15 @@
+from flask import current_app
 from loguru import logger
 
-from infrastructure.supabase_write_repositories import SETTLED_SUCCESS_STATUSES
+from infrastructure.supabase_write_repositories import (
+    SETTLED_SUCCESS_STATUSES,
+    SupabaseWalletRepository,
+)
 from models.public import db
 from services.jeko_service import JekoDuplicateReferenceError, JekoService
+
+
+wallet_repository = SupabaseWalletRepository()
 
 
 # Montant minimum d'un virement JEKO (en sous-unités).
@@ -72,8 +79,101 @@ def process_refund_for_cancellation(booking, payment_repository):
     annulée. Appelé APRÈS le commit de l'annulation ; fait ses propres commits
     et ne raise jamais : un échec de remboursement ne doit pas dé-annuler.
 
+    Deux chemins, selon WALLET_REFUND_TO_WALLET :
+    - wallet (cible) : crédit immédiat du porte-monnaie, quel que soit le moyen
+      de paiement d'origine ;
+    - virement JEKO (historique) : conservé tant que la bascule n'est pas faite,
+      et pour les remboursements hors-application traités par le support.
+
     Retourne un dict pour la réponse API :
     {'status': 'none'|'initiated'|'completed'|'manual', ...}
+    """
+    if current_app.config.get('WALLET_ENABLED') and current_app.config.get(
+        'WALLET_REFUND_TO_WALLET'
+    ):
+        return refund_to_wallet(booking, payment_repository)
+    return refund_by_jeko_transfer(booking, payment_repository)
+
+
+def refund_to_wallet(booking, payment_repository):
+    """Recrédite le wallet du client du montant encaissé (§ 7.3).
+
+    Fonctionne pour tous les moyens de paiement : plus de dépendance au virement
+    sortant JEKO, donc plus de « payeur introuvable », plus de blocage sous le
+    minimum de virement, et le remboursement Paystack cesse d'être manuel.
+    L'annulation d'une réservation payée par le wallet n'a pas de branche
+    spécifique : le crédit annule simplement le débit initial.
+    """
+    booking_id = booking['booking_id']
+    try:
+        payment = payment_repository.get_for_booking(booking_id)
+        if not payment or (payment.get('status') or '').lower() not in SETTLED_SUCCESS_STATUSES:
+            return {'status': 'none'}
+
+        # payments.amount est un numérique en francs XOF ; le wallet est en
+        # francs entiers.
+        amount = int(round(float(payment['amount'])))
+        entry = wallet_repository.post_entry(
+            customer_id=booking['customer_id'],
+            direction='credit',
+            entry_type='booking_refund',
+            amount=amount,
+            reference_type='payment',
+            reference_id=payment['id'],
+            idempotency_key=f"booking_refund:{payment['id']}",
+            description=(
+                f"Remboursement {booking.get('external_reference') or booking_id}"
+            ),
+            metadata={
+                'booking_id': str(booking_id),
+                'original_provider': payment.get('provider'),
+            },
+        )
+        payment_repository.settle_refund_by_reference(
+            payment['provider_reference'],
+            'refunded',
+            {
+                'destination': 'wallet',
+                'wallet_entry_id': str(entry['id']),
+                'amount': amount,
+            },
+        )
+        db.session.commit()
+
+        logger.info(
+            f"Refund credited to wallet (booking_id={booking_id}, "
+            f"payment_id={payment['id']}, amount={amount}, "
+            f"balance={entry['balance_after']}, replayed={entry['replayed']})"
+        )
+        return {
+            'status': 'completed',
+            'destination': 'wallet',
+            'amount': amount,
+            'wallet_balance': int(entry['balance_after']),
+        }
+
+    except Exception as e:
+        # L'annulation reste acquise : elle a été commitée avant l'appel. Le
+        # paiement bascule en refund_required, comme aujourd'hui, et le support
+        # reprend la main.
+        db.session.rollback()
+        logger.exception(f"Wallet refund failed (booking_id={booking_id}): {e}")
+        try:
+            payment = payment_repository.get_for_booking(booking_id)
+            if payment and (payment.get('status') or '').lower() in SETTLED_SUCCESS_STATUSES:
+                return _mark_manual_refund(
+                    payment_repository, payment, 'wallet_credit_failed', {'error': str(e)}
+                )
+        except Exception:
+            db.session.rollback()
+        return {'status': 'manual', 'reason': 'wallet_credit_failed'}
+
+
+def refund_by_jeko_transfer(booking, payment_repository):
+    """Remboursement par virement sortant JEKO (chemin historique).
+
+    Reste en place pour les remboursements hors-application traités par le
+    support et tant que WALLET_REFUND_TO_WALLET n'est pas activé.
     """
     booking_id = booking['booking_id']
     try:

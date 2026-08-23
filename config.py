@@ -69,3 +69,43 @@ class Config:
     # http(s) comme successUrl/errorUrl. Vide = page HTML de callback seule.
     BOOKING_DEEPLINK_CALLBACK = os.environ.get('BOOKING_DEEPLINK_CALLBACK') or ''
 
+    # ── Wallet client ────────────────────────────────────────────────────────
+    # Porte-monnaie fermé : dépôt mobile money, paiement de réservation depuis
+    # le solde, recrédit à l'annulation. Aucun retrait.
+    #
+    # Quatre interrupteurs, un par étape du déploiement progressif : le code est
+    # livré inerte (WALLET_ENABLED=false) et chaque étape s'ouvre séparément.
+    #   1. tables + backfill, tout à false            -> rien ne change
+    #   2. WALLET_ENABLED=true, TOPUP/PAYMENT=false   -> lecture seule
+    #   3. + WALLET_TOPUP_ENABLED=true                -> rechargement
+    #   4. + WALLET_PAYMENT_ENABLED=true              -> paiement depuis le solde
+    #   5. + WALLET_REFUND_TO_WALLET=true             -> remboursements en wallet
+    WALLET_ENABLED = os.environ.get('WALLET_ENABLED', 'false').lower() == 'true'
+    WALLET_TOPUP_ENABLED = os.environ.get('WALLET_TOPUP_ENABLED', 'true').lower() == 'true'
+    WALLET_PAYMENT_ENABLED = os.environ.get('WALLET_PAYMENT_ENABLED', 'true').lower() == 'true'
+    # Bascule des remboursements d'annulation vers le wallet. À false, le
+    # virement sortant JEKO reste le chemin nominal (comportement historique).
+    # C'est le seul basculement dont le retour arrière demande une décision
+    # produit : un client recrédité ne peut pas être « dé-crédité ».
+    WALLET_REFUND_TO_WALLET = (
+        os.environ.get('WALLET_REFUND_TO_WALLET', 'false').lower() == 'true'
+    )
+
+    # Plafonds, en francs entiers (le XOF n'a pas de subdivision : les montants
+    # wallet sont stockés et exposés en francs, jamais en sous-unité).
+    WALLET_MIN_TOPUP_XOF = int(os.environ.get('WALLET_MIN_TOPUP_XOF') or 500)
+    WALLET_MAX_TOPUP_XOF = int(os.environ.get('WALLET_MAX_TOPUP_XOF') or 200_000)
+    WALLET_MAX_BALANCE_XOF = int(os.environ.get('WALLET_MAX_BALANCE_XOF') or 500_000)
+    WALLET_DAILY_TOPUP_LIMIT_XOF = int(
+        os.environ.get('WALLET_DAILY_TOPUP_LIMIT_XOF') or 300_000
+    )
+
+    # Limitation de débit sur POST /api/wallet/topups (par client).
+    WALLET_TOPUP_RATE_LIMIT = int(os.environ.get('WALLET_TOPUP_RATE_LIMIT') or 10)
+    WALLET_TOPUP_RATE_WINDOW_MINUTES = int(
+        os.environ.get('WALLET_TOPUP_RATE_WINDOW_MINUTES') or 10
+    )
+    # Fenêtre pendant laquelle un rechargement 'pending' identique est réutilisé
+    # plutôt que dupliqué (même client, même montant, même méthode).
+    WALLET_TOPUP_REUSE_MINUTES = int(os.environ.get('WALLET_TOPUP_REUSE_MINUTES') or 15)
+

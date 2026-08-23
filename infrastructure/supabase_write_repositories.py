@@ -892,3 +892,656 @@ class SupabasePaymentRepository:
                 {"booking_id": str(row["booking_id"])},
             ).first()
         return dict(row), booking_row is not None
+
+
+# ---------------------------------------------------------------------------
+# Wallet repository — gère public.wallets / wallet_entries / wallet_topups
+# ---------------------------------------------------------------------------
+
+# Sens d'un mouvement. Le montant est toujours positif, le signe est porté ici.
+WALLET_DIRECTIONS = ("credit", "debit")
+
+# Types d'écriture du registre.
+WALLET_ENTRY_TYPES = (
+    "topup",
+    "booking_payment",
+    "booking_refund",
+    "topup_reversal",
+    "adjustment",
+    "promo_credit",
+)
+
+# Un wallet gelé (fraude, litige) refuse les débits et les crédits de
+# rechargement, mais jamais un remboursement ni une correction du support :
+# bloquer ces deux-là laisserait de l'argent client dans les limbes.
+WALLET_FROZEN_ALLOWED_ENTRY_TYPES = ("booking_refund", "adjustment")
+
+# Statuts d'une tentative de rechargement, calqués sur payments.status.
+TOPUP_STATUSES = ("pending", "success", "failed", "expired")
+
+# Préfixe des références de rechargement que nous émettons. C'est lui qui permet
+# d'aiguiller un événement provider vers le règlement d'un topup plutôt que vers
+# celui d'un paiement de réservation (cf. RF- pour les virements sortants).
+TOPUP_REFERENCE_PREFIX = "TU-"
+
+
+class WalletError(Exception):
+    """Erreur métier du wallet, portant un code stable pour l'app mobile."""
+
+    code = "WALLET_ERROR"
+    http_status = 400
+
+
+class WalletFrozenError(WalletError):
+    code = "WALLET_FROZEN"
+    http_status = 409
+
+
+class InsufficientFundsError(WalletError):
+    code = "INSUFFICIENT_FUNDS"
+    http_status = 402
+
+    def __init__(self, *, balance: int, required: int):
+        self.balance = int(balance)
+        self.required = int(required)
+        self.missing = self.required - self.balance
+        super().__init__(
+            f"Insufficient wallet balance: {self.balance} < {self.required} "
+            f"(missing {self.missing})"
+        )
+
+
+class SupabaseWalletRepository:
+    """Accès au porte-monnaie client.
+
+    Toute mutation du solde passe par post_entry() : c'est le seul endroit qui
+    verrouille le wallet, vérifie les invariants et écrit dans le registre.
+    Aucune route ne doit toucher wallets.balance directement.
+    """
+
+    # ── wallets ────────────────────────────────────────────────────────────
+
+    def get_or_create(self, customer_id: UUID | str) -> dict[str, Any]:
+        """Retourne le wallet du client, en le créant à la volée si besoin.
+
+        La contrainte d'unicité sur customer_id est la garantie anti-doublon :
+        deux créations concurrentes ne produisent qu'un seul wallet.
+        """
+        wallet = self.get_for_customer(customer_id)
+        if wallet:
+            return wallet
+
+        db.session.execute(
+            text(
+                """
+                insert into public.wallets (customer_id)
+                values (cast(:customer_id as uuid))
+                on conflict (customer_id) do nothing
+                """
+            ),
+            {"customer_id": str(customer_id)},
+        )
+        db.session.flush()
+        wallet = self.get_for_customer(customer_id)
+        if not wallet:
+            raise WalletError(f"Could not create wallet for customer {customer_id}")
+        return wallet
+
+    def get_for_customer(
+        self, customer_id: UUID | str, for_update: bool = False
+    ) -> dict[str, Any] | None:
+        lock_clause = " for update" if for_update else ""
+        row = (
+            db.session.execute(
+                text(
+                    f"""
+                    select *
+                    from public.wallets
+                    where customer_id = cast(:customer_id as uuid){lock_clause}
+                    """
+                ),
+                {"customer_id": str(customer_id)},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    # ── registre ───────────────────────────────────────────────────────────
+
+    def post_entry(
+        self,
+        *,
+        customer_id: UUID | str,
+        direction: str,
+        entry_type: str,
+        amount: int,
+        idempotency_key: str,
+        reference_type: str | None = None,
+        reference_id: UUID | str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Applique un mouvement au wallet et l'inscrit au registre.
+
+        Séquence, dans la transaction de l'appelant (qui commit) :
+          1. verrou de ligne sur le wallet, ce qui sérialise les mouvements du
+             même client (deux clients différents ne se bloquent jamais) ;
+          2. wallet gelé -> WalletFrozenError, sauf remboursement/ajustement ;
+          3. débit supérieur au solde -> InsufficientFundsError (avec le manquant) ;
+          4. insertion de l'écriture, 'on conflict (idempotency_key) do nothing' ;
+          5. si rien n'est inséré, l'opération a déjà été appliquée : on relit
+             l'écriture existante, le solde n'est pas retouché, replayed=True ;
+          6. report du nouveau solde sur wallets.balance.
+
+        Le rejeu n'est pas une erreur : webhook et callback de retour courent en
+        parallèle, et les providers redélivrent leurs événements. Celui qui
+        arrive en second retrouve la clé déjà consommée et rend le même solde.
+        """
+        if direction not in WALLET_DIRECTIONS:
+            raise ValueError(f"Invalid wallet direction '{direction}'")
+        if entry_type not in WALLET_ENTRY_TYPES:
+            raise ValueError(f"Invalid wallet entry_type '{entry_type}'")
+        amount = int(amount)
+        if amount <= 0:
+            raise ValueError("Wallet entry amount must be a positive integer")
+        if not idempotency_key:
+            raise ValueError("Wallet entry requires an idempotency_key")
+
+        self.get_or_create(customer_id)
+        wallet = self.get_for_customer(customer_id, for_update=True)
+
+        if (
+            wallet["status"] != "active"
+            and entry_type not in WALLET_FROZEN_ALLOWED_ENTRY_TYPES
+        ):
+            raise WalletFrozenError(f"Wallet {wallet['id']} is {wallet['status']}")
+
+        balance = int(wallet["balance"])
+        if direction == "debit":
+            if amount > balance:
+                raise InsufficientFundsError(balance=balance, required=amount)
+            balance_after = balance - amount
+        else:
+            balance_after = balance + amount
+
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    insert into public.wallet_entries (
+                        wallet_id,
+                        direction,
+                        entry_type,
+                        amount,
+                        balance_after,
+                        reference_type,
+                        reference_id,
+                        idempotency_key,
+                        description,
+                        metadata
+                    )
+                    values (
+                        cast(:wallet_id as uuid),
+                        :direction,
+                        :entry_type,
+                        :amount,
+                        :balance_after,
+                        :reference_type,
+                        cast(:reference_id as uuid),
+                        :idempotency_key,
+                        :description,
+                        cast(:metadata as jsonb)
+                    )
+                    on conflict (idempotency_key) do nothing
+                    returning *
+                    """
+                ),
+                {
+                    "wallet_id": str(wallet["id"]),
+                    "direction": direction,
+                    "entry_type": entry_type,
+                    "amount": amount,
+                    "balance_after": balance_after,
+                    "reference_type": reference_type,
+                    "reference_id": str(reference_id) if reference_id else None,
+                    "idempotency_key": idempotency_key,
+                    "description": description,
+                    "metadata": (
+                        json.dumps(metadata, default=str) if metadata is not None else None
+                    ),
+                },
+            )
+            .mappings()
+            .first()
+        )
+
+        if not row:
+            existing = self.get_entry_by_idempotency_key(idempotency_key)
+            if not existing:
+                # Conflit sur une autre contrainte que idempotency_key : ne pas
+                # masquer l'anomalie derrière un faux rejeu.
+                raise WalletError(
+                    f"Wallet entry '{idempotency_key}' was not inserted and cannot be read back"
+                )
+            existing["replayed"] = True
+            return existing
+
+        db.session.execute(
+            text(
+                """
+                update public.wallets
+                set balance = :balance_after,
+                    updated_at = timezone('utc', now())
+                where id = cast(:wallet_id as uuid)
+                """
+            ),
+            {"wallet_id": str(wallet["id"]), "balance_after": balance_after},
+        )
+        db.session.flush()
+
+        entry = dict(row)
+        entry["replayed"] = False
+        return entry
+
+    def get_entry_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any] | None:
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    select *
+                    from public.wallet_entries
+                    where idempotency_key = :idempotency_key
+                    """
+                ),
+                {"idempotency_key": idempotency_key},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    def list_entries(
+        self,
+        *,
+        customer_id: UUID | str,
+        limit: int = 20,
+        before: Any = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Relevé descendant, paginé par curseur sur created_at.
+
+        Retourne (écritures, has_more). Une ligne de plus que `limit` est lue
+        pour savoir s'il reste une page, sans faire de count().
+        """
+        rows = (
+            db.session.execute(
+                text(
+                    """
+                    select e.*
+                    from public.wallet_entries e
+                    join public.wallets w on w.id = e.wallet_id
+                    where w.customer_id = cast(:customer_id as uuid)
+                      and (:before is null or e.created_at < cast(:before as timestamptz))
+                    order by e.created_at desc, e.id desc
+                    limit :limit
+                    """
+                ),
+                {
+                    "customer_id": str(customer_id),
+                    "before": before,
+                    "limit": limit + 1,
+                },
+            )
+            .mappings()
+            .all()
+        )
+        has_more = len(rows) > limit
+        return [dict(row) for row in rows[:limit]], has_more
+
+    def sum_entries(
+        self,
+        *,
+        customer_id: UUID | str,
+        entry_type: str,
+        since_hours: int | None = None,
+    ) -> int:
+        """Cumul des montants d'un type d'écriture, éventuellement sur une
+        fenêtre glissante (plafond journalier de rechargement)."""
+        total = db.session.execute(
+            text(
+                """
+                select coalesce(sum(e.amount), 0)
+                from public.wallet_entries e
+                join public.wallets w on w.id = e.wallet_id
+                where w.customer_id = cast(:customer_id as uuid)
+                  and e.entry_type = :entry_type
+                  and (
+                      :since_hours is null
+                      or e.created_at > timezone('utc', now())
+                         - make_interval(hours => cast(:since_hours as int))
+                  )
+                """
+            ),
+            {
+                "customer_id": str(customer_id),
+                "entry_type": entry_type,
+                "since_hours": since_hours,
+            },
+        ).scalar()
+        return int(total or 0)
+
+    # ── rechargements ──────────────────────────────────────────────────────
+
+    def create_topup(
+        self,
+        *,
+        wallet_id: UUID | str,
+        customer_id: UUID | str,
+        amount: int,
+        provider: str,
+        provider_reference: str,
+        provider_method: str | None = None,
+    ) -> dict[str, Any]:
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    insert into public.wallet_topups (
+                        wallet_id,
+                        customer_id,
+                        amount,
+                        currency,
+                        provider,
+                        provider_method,
+                        provider_reference,
+                        status
+                    )
+                    values (
+                        cast(:wallet_id as uuid),
+                        cast(:customer_id as uuid),
+                        :amount,
+                        'XOF',
+                        :provider,
+                        :provider_method,
+                        :provider_reference,
+                        'pending'
+                    )
+                    returning *
+                    """
+                ),
+                {
+                    "wallet_id": str(wallet_id),
+                    "customer_id": str(customer_id),
+                    "amount": int(amount),
+                    "provider": provider,
+                    "provider_method": provider_method,
+                    "provider_reference": provider_reference,
+                },
+            )
+            .mappings()
+            .one()
+        )
+        return dict(row)
+
+    def attach_provider_checkout(
+        self,
+        *,
+        topup_id: UUID | str,
+        provider_payment_url: str | None,
+        raw_provider_response: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Enregistre l'URL de checkout et la réponse brute du provider.
+
+        raw_provider_response porte le provider_payment_id, seule clé acceptée
+        par l'API de vérification JEKO au retour de checkout.
+        """
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    update public.wallet_topups
+                    set provider_payment_url = :provider_payment_url,
+                        raw_provider_response = cast(:raw_provider_response as jsonb),
+                        updated_at = timezone('utc', now())
+                    where id = cast(:topup_id as uuid)
+                    returning *
+                    """
+                ),
+                {
+                    "topup_id": str(topup_id),
+                    "provider_payment_url": provider_payment_url,
+                    "raw_provider_response": (
+                        json.dumps(raw_provider_response, default=str)
+                        if raw_provider_response is not None
+                        else None
+                    ),
+                },
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    def get_topup(self, topup_id: UUID | str) -> dict[str, Any] | None:
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    select *
+                    from public.wallet_topups
+                    where id = cast(:topup_id as uuid)
+                    """
+                ),
+                {"topup_id": str(topup_id)},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    def get_topup_by_reference(
+        self, provider_reference: str, for_update: bool = False
+    ) -> dict[str, Any] | None:
+        lock_clause = " for update" if for_update else ""
+        row = (
+            db.session.execute(
+                text(
+                    f"""
+                    select *
+                    from public.wallet_topups
+                    where provider_reference = :provider_reference{lock_clause}
+                    """
+                ),
+                {"provider_reference": provider_reference},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    def list_topups(
+        self, *, customer_id: UUID | str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        rows = (
+            db.session.execute(
+                text(
+                    """
+                    select *
+                    from public.wallet_topups
+                    where customer_id = cast(:customer_id as uuid)
+                    order by created_at desc
+                    limit :limit
+                    """
+                ),
+                {"customer_id": str(customer_id), "limit": limit},
+            )
+            .mappings()
+            .all()
+        )
+        return [dict(row) for row in rows]
+
+    def find_reusable_pending_topup(
+        self,
+        *,
+        customer_id: UUID | str,
+        amount: int,
+        provider: str,
+        provider_method: str | None,
+        max_age_minutes: int = 15,
+    ) -> dict[str, Any] | None:
+        """Rechargement 'pending' récent et identique, à réutiliser plutôt qu'à
+        dupliquer (double tap sur le bouton, reprise d'écran). Même esprit que
+        SupabasePaymentRepository.create_or_update côté paiement."""
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    select *
+                    from public.wallet_topups
+                    where customer_id = cast(:customer_id as uuid)
+                      and status = 'pending'
+                      and amount = :amount
+                      and provider = :provider
+                      and provider_method is not distinct from :provider_method
+                      and provider_payment_url is not null
+                      and created_at > timezone('utc', now())
+                          - make_interval(mins => cast(:max_age_minutes as int))
+                    order by created_at desc
+                    limit 1
+                    """
+                ),
+                {
+                    "customer_id": str(customer_id),
+                    "amount": int(amount),
+                    "provider": provider,
+                    "provider_method": provider_method,
+                    "max_age_minutes": max_age_minutes,
+                },
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    def count_topups_since(self, *, customer_id: UUID | str, minutes: int) -> int:
+        """Nombre de rechargements créés sur la fenêtre glissante (rate limit)."""
+        count = db.session.execute(
+            text(
+                """
+                select count(*)
+                from public.wallet_topups
+                where customer_id = cast(:customer_id as uuid)
+                  and created_at > timezone('utc', now())
+                      - make_interval(mins => cast(:minutes as int))
+                """
+            ),
+            {"customer_id": str(customer_id), "minutes": minutes},
+        ).scalar()
+        return int(count or 0)
+
+    def settle_topup_by_reference(
+        self,
+        provider_reference: str,
+        status: str,
+        raw_provider_response: dict[str, Any] | None = None,
+        credited: bool = False,
+    ) -> dict[str, Any] | None:
+        """Pose le statut final d'un rechargement.
+
+        credited=True horodate credited_at (une seule fois : coalesce), ce qui
+        matérialise l'adossement entre le topup 'success' et son écriture.
+        """
+        if status not in TOPUP_STATUSES:
+            raise ValueError(f"Invalid topup status '{status}'")
+        row = (
+            db.session.execute(
+                text(
+                    """
+                    update public.wallet_topups
+                    set status = :status,
+                        credited_at = case
+                            when :credited then coalesce(credited_at, timezone('utc', now()))
+                            else credited_at
+                        end,
+                        raw_provider_response = coalesce(
+                            cast(:raw_provider_response as jsonb),
+                            raw_provider_response
+                        ),
+                        updated_at = timezone('utc', now())
+                    where provider_reference = :provider_reference
+                    returning *
+                    """
+                ),
+                {
+                    "provider_reference": provider_reference,
+                    "status": status,
+                    "credited": credited,
+                    "raw_provider_response": (
+                        json.dumps(raw_provider_response, default=str)
+                        if raw_provider_response is not None
+                        else None
+                    ),
+                },
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+    def expire_stale_topups(self, *, older_than_minutes: int = 60) -> int:
+        """Passe en 'expired' les rechargements restés 'pending' trop longtemps.
+
+        Sans effet sur le solde : un topup non réglé n'a jamais produit
+        d'écriture.
+        """
+        result = db.session.execute(
+            text(
+                """
+                update public.wallet_topups
+                set status = 'expired',
+                    updated_at = timezone('utc', now())
+                where status = 'pending'
+                  and created_at < timezone('utc', now())
+                      - make_interval(mins => cast(:older_than_minutes as int))
+                """
+            ),
+            {"older_than_minutes": older_than_minutes},
+        )
+        return result.rowcount
+
+    # ── réconciliation ─────────────────────────────────────────────────────
+
+    def find_balance_divergences(self) -> list[dict[str, Any]]:
+        """Wallets dont le solde matérialisé diffère de la somme des écritures.
+
+        Un écart signale un bug de code, pas une donnée à recoller en silence :
+        cette méthode constate, elle ne corrige rien.
+        """
+        rows = (
+            db.session.execute(
+                text(
+                    """
+                    select w.id as wallet_id,
+                           w.customer_id,
+                           w.balance,
+                           coalesce(sum(
+                               case when e.direction = 'credit' then e.amount
+                                    else -e.amount end
+                           ), 0) as computed_balance
+                    from public.wallets w
+                    left join public.wallet_entries e on e.wallet_id = w.id
+                    group by w.id, w.customer_id, w.balance
+                    having w.balance <> coalesce(sum(
+                        case when e.direction = 'credit' then e.amount
+                             else -e.amount end
+                    ), 0)
+                    """
+                )
+            )
+            .mappings()
+            .all()
+        )
+        return [
+            {**dict(row), "difference": int(row["balance"]) - int(row["computed_balance"])}
+            for row in rows
+        ]

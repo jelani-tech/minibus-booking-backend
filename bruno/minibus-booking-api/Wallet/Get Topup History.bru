@@ -1,0 +1,31 @@
+meta {
+  name: Get Topup History
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/wallet/topups?limit=20
+  body: none
+  auth: none
+}
+
+params:query {
+  limit: 20
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+docs {
+  # Get Topup History
+
+  Historique des tentatives de rechargement du client authentifié, de la plus
+  récente à la plus ancienne.
+
+  Une tentative n'est pas un mouvement : la plupart des lignes `pending`,
+  `failed` ou `expired` ne produiront jamais d'écriture au registre. Seules les
+  lignes `success` ont un pendant dans GET /api/wallet/transactions.
+}

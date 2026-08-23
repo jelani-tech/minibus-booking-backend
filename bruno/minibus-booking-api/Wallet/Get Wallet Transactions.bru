@@ -1,0 +1,38 @@
+meta {
+  name: Get Wallet Transactions
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/wallet/transactions?limit=20
+  body: none
+  auth: none
+}
+
+params:query {
+  limit: 20
+  ~before: 2026-08-02T09:12:44+00:00
+}
+
+headers {
+  Authorization: Bearer {{token}}
+  Content-Type: application/json
+}
+
+docs {
+  # Get Wallet Transactions
+
+  Relevé paginé des écritures du registre, du plus récent au plus ancien.
+
+  Paramètres :
+  - `limit` : 20 par défaut, 100 au maximum
+  - `before` : curseur `created_at` ISO-8601, repris de `next_before` de la
+    page précédente. Pensez à l'encoder (le `+` de l'offset).
+
+  Chaque écriture porte `direction` (credit|debit), `type` (topup,
+  booking_payment, booking_refund, topup_reversal, adjustment, promo_credit),
+  `amount` (toujours positif) et `balance_after` (solde après ce mouvement).
+
+  La réponse contient `has_more` et `next_before` pour la page suivante.
+}
