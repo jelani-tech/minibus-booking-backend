@@ -1,5 +1,5 @@
 from flask import Blueprint, current_app, jsonify, request
-from flask_jwt_extended import get_jwt_identity, jwt_required
+from flask_jwt_extended import get_jwt_identity
 from loguru import logger
 
 from application.api_serializers import booking_row_to_api
@@ -9,6 +9,7 @@ from infrastructure.supabase_write_repositories import (
     SupabasePaymentRepository,
 )
 from models.public import db
+from routes.guards import customer_required
 from services.refund_service import process_refund_for_cancellation
 
 booking_bp = Blueprint('booking', __name__, url_prefix='/api/bookings')
@@ -18,7 +19,7 @@ payment_repository = SupabasePaymentRepository()
 
 
 @booking_bp.route('', methods=['POST'])
-@jwt_required()
+@customer_required
 def create_booking():
     customer_id = get_jwt_identity()
     try:
@@ -67,7 +68,7 @@ def create_booking():
 
 
 @booking_bp.route('', methods=['GET'])
-@jwt_required()
+@customer_required
 def get_user_bookings():
     customer_id = get_jwt_identity()
     try:
@@ -101,7 +102,7 @@ def get_booking_by_ticket_reference(ticket_reference):
 
 
 @booking_bp.route('/<uuid:booking_id>', methods=['GET'])
-@jwt_required()
+@customer_required
 def get_booking(booking_id):
     customer_id = get_jwt_identity()
     try:
@@ -126,7 +127,7 @@ def get_booking(booking_id):
 
 
 @booking_bp.route('/<uuid:booking_id>', methods=['DELETE'])
-@jwt_required()
+@customer_required
 def cancel_booking(booking_id):
     customer_id = get_jwt_identity()
     try:

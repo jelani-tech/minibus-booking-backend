@@ -18,7 +18,8 @@ from models.public import db
 class SupabaseAuthRepository:
     """Gère les entrées dans auth.users pour l'authentification par mot de passe.
 
-    La table auth.users ne contient que le téléphone et le mot de passe hashé.
+    La table auth.users ne contient que le téléphone et le mot de passe hashé
+    (nul pour un compte uniquement chauffeur, dont le PIN est dans auth.user_pins).
     Le profil métier est dans public.customers (lié via auth_user_id).
     """
 
@@ -56,7 +57,8 @@ class SupabaseAuthRepository:
     def verify_password(self, phone: str, password: str) -> dict[str, Any] | None:
         """Vérifie le mot de passe. Retourne l'entrée auth.users si ok, sinon None."""
         auth_user = self.find_by_phone(phone)
-        if not auth_user:
+        # Un compte chauffeur n'a qu'un PIN : pas de mot de passe à vérifier.
+        if not auth_user or not auth_user["encrypted_password"]:
             return None
         is_valid = bcrypt.checkpw(
             password.encode(),

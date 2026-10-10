@@ -3,8 +3,7 @@ from datetime import datetime, timedelta, timezone
 import secrets
 
 from flask import Blueprint, jsonify, request
-from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required
-from sqlalchemy import UUID
+from flask_jwt_extended import get_jwt_identity
 from sqlalchemy.exc import IntegrityError
 from loguru import logger
 
@@ -13,7 +12,12 @@ from infrastructure.supabase_write_repositories import (
     SupabaseAuthRepository,
     SupabaseCustomerRepository,
 )
+from logger import mask_phone
 from models.public import db
+from routes.auth_sessions import logout_response, refresh_response, token_service
+from routes.guards import customer_required
+from services.auth.audiences import CUSTOMER_APP
+from services.auth.token_service import Principal
 from services.email_service import BrevoEmailService
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
@@ -21,6 +25,23 @@ auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 auth_repository = SupabaseAuthRepository()
 customer_repository = SupabaseCustomerRepository()
 email_service = BrevoEmailService()
+
+
+def _customer_principal(customer):
+    return Principal(identity=str(customer['id']), auth_user_id=str(customer['auth_user_id']))
+
+
+def _resolve_customer_principal(auth_user_id):
+    customer = customer_repository.find_by_auth_user_id(auth_user_id)
+    return _customer_principal(customer) if customer else None
+
+
+def _open_customer_session(customer, data):
+    return token_service.open_session(
+        _customer_principal(customer),
+        CUSTOMER_APP,
+        device_id=(data.get('device_id') or '').strip() or None,
+    )
 
 
 def _mask_email(email: str) -> str:
@@ -36,24 +57,17 @@ def _mask_email(email: str) -> str:
     return f"{masked_local}@{domain}"
 
 
-def _mask_phone(phone: str) -> str:
-    """Masks a phone number for logging (keeps only the last 4 digits)."""
-    if not phone:
-        return "<vide>"
-    if len(phone) <= 4:
-        return "*" * len(phone)
-    return f"{'*' * (len(phone) - 4)}{phone[-4:]}"
-
-
 @auth_bp.route('/register', methods=['POST'])
 def register():
     """Inscription d'un nouveau client via l'application mobile.
 
     Flux :
     1. Valider les champs requis (phone, password, name).
-    2. Créer l'entrée dans auth.users avec le mot de passe hashé.
+    2. Créer l'entrée dans auth.users avec le mot de passe hashé. Un compte
+       chauffeur sans mot de passe est réutilisé : un chauffeur peut devenir
+       client avec le même numéro.
     3. Créer / mettre à jour le profil dans public.customers en liant auth_user_id.
-    4. Retourner le profil et le JWT.
+    4. Retourner le profil et les jetons.
     """
     phone = ''
     try:
@@ -63,25 +77,28 @@ def register():
         password = data.get('password', '').strip()
         name = data.get('name', '').strip()
 
-        logger.info(f"Registration attempt for phone {_mask_phone(phone)}")
+        logger.info(f"Registration attempt for phone {mask_phone(phone)}")
 
         if not phone or not password or not name:
             logger.warning("Registration rejected: missing required fields (phone/password/name)")
             return jsonify({'error': 'Les champs phone, password et name sont obligatoires'}), 400
 
         if len(password) < 6:
-            logger.warning(f"Registration rejected for {_mask_phone(phone)}: password too short")
+            logger.warning(f"Registration rejected for {mask_phone(phone)}: password too short")
             return jsonify({'error': 'Le mot de passe doit contenir au moins 6 caractères'}), 400
 
         # 1. Vérifier si un compte auth existe déjà pour ce numéro
-        existing_auth = auth_repository.find_by_phone(phone)
-        if existing_auth:
-            logger.warning(f"Registration rejected: account already exists for {_mask_phone(phone), existing_auth }")
+        auth_user = auth_repository.find_by_phone(phone)
+        if auth_user and auth_user.get('encrypted_password'):
+            logger.warning(f"Registration rejected: account already exists for {mask_phone(phone)}")
             return jsonify({'error': 'Un compte existe déjà pour ce numéro de téléphone.'}), 409
 
-        # 2. Créer l'entrée auth.users (avec mot de passe hashé via bcrypt)
-        user_id = str(uuid.uuid4())
-        auth_user = auth_repository.create(user_id= user_id, phone=phone, password=password)
+        # 2. Poser le mot de passe (hashé via bcrypt) sur le compte auth.users
+        if auth_user:
+            auth_repository.update_password(phone=phone, password=password)
+        else:
+            user_id = str(uuid.uuid4())
+            auth_user = auth_repository.create(user_id= user_id, phone=phone, password=password)
 
         # 3. Créer / mettre à jour le profil public.customers en liant auth_user_id
         customer = customer_repository.create_or_update(
@@ -90,26 +107,26 @@ def register():
             email=data.get('email'),
             auth_user_id=auth_user['id'],
         )
+
+        # 4. Ouvrir la session : access token (identité = ID customer) + refresh token
+        tokens = _open_customer_session(customer, data)
         db.session.commit()
 
-        # 4. Générer le JWT à partir de l'ID customer (logique métier inchangée)
-        access_token = create_access_token(identity=str(customer['id']))
-
-        logger.info(f"Registration successful for {_mask_phone(phone)} (customer_id={customer['id']})")
+        logger.info(f"Registration successful for {mask_phone(phone)} (customer_id={customer['id']})")
 
         return jsonify({
             'message': 'Inscription réussie',
             'user': customer_row_to_api(customer),
-            'access_token': access_token,
+            **tokens.to_api(),
         }), 201
 
     except IntegrityError as error:
         db.session.rollback()
-        logger.warning(f"Registration conflict: phone already in use ({_mask_phone(phone)}, {error})")
+        logger.warning(f"Registration conflict: phone already in use ({mask_phone(phone)}, {error})")
         return jsonify({'error': 'Un compte existe déjà pour ce numéro de téléphone.'}), 409
     except Exception as e:
         db.session.rollback()
-        logger.exception(f"Error during registration for {_mask_phone(phone)}: {e}")
+        logger.exception(f"Error during registration for {mask_phone(phone)}: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -121,7 +138,7 @@ def login():
     1. Valider les champs requis (phone, password).
     2. Vérifier le mot de passe via auth.users (bcrypt).
     3. Récupérer le profil public.customers lié.
-    4. Retourner le profil et le JWT.
+    4. Retourner le profil et les jetons.
     """
     phone = ''
     try:
@@ -130,7 +147,7 @@ def login():
         phone = data.get('phone', '').strip()
         password = data.get('password', '').strip()
 
-        logger.info(f"Login attempt for phone {_mask_phone(phone)}")
+        logger.info(f"Login attempt for phone {mask_phone(phone)}")
 
         if not phone or not password:
             logger.warning("Login rejected: missing required fields (phone/password)")
@@ -140,7 +157,7 @@ def login():
         auth_user = auth_repository.verify_password(phone, password)
         if not auth_user:
             # Réponse générique pour ne pas indiquer si le compte existe ou non
-            logger.warning(f"Login failed: invalid credentials for {_mask_phone(phone)}")
+            logger.warning(f"Login failed: invalid credentials for {mask_phone(phone)}")
             return jsonify({'error': 'Identifiants invalides'}), 401
 
         # 2. Récupérer le profil customer lié
@@ -149,28 +166,48 @@ def login():
             # Edge case : auth.users existe mais pas de customer (ne devrait pas arriver)
             logger.error(
                 f"Login inconsistency: auth user {auth_user['id']} has no linked customer profile "
-                f"(phone {_mask_phone(phone)})"
+                f"(phone {mask_phone(phone)})"
             )
             return jsonify({'error': 'Profil client introuvable'}), 404
 
-        # 3. Générer le JWT
-        access_token = create_access_token(identity=str(customer['id']))
+        # 3. Ouvrir la session : access token + refresh token
+        tokens = _open_customer_session(customer, data)
+        db.session.commit()
 
-        logger.info(f"Login successful for {_mask_phone(phone)} (customer_id={customer['id']})")
+        logger.info(f"Login successful for {mask_phone(phone)} (customer_id={customer['id']})")
 
         return jsonify({
             'message': 'Connexion réussie',
             'user': customer_row_to_api(customer),
-            'access_token': access_token,
+            **tokens.to_api(),
         }), 200
 
     except Exception as e:
-        logger.exception(f"Error during login for {_mask_phone(phone)}: {e}")
+        db.session.rollback()
+        logger.exception(f"Error during login for {mask_phone(phone)}: {e}")
         return jsonify({'error': str(e)}), 500
 
 
+@auth_bp.route('/refresh', methods=['POST'])
+def refresh():
+    """Échange le refresh token contre une nouvelle paire de jetons."""
+    return refresh_response(
+        CUSTOMER_APP,
+        lambda refresh_token: token_service.rotate(
+            refresh_token, CUSTOMER_APP, _resolve_customer_principal
+        ),
+    )
+
+
+@auth_bp.route('/logout', methods=['POST'])
+@customer_required
+def logout():
+    """Révoque la session en cours."""
+    return logout_response(CUSTOMER_APP)
+
+
 @auth_bp.route('/me', methods=['GET'])
-@jwt_required()
+@customer_required
 def get_current_user():
     """Retourne le profil du client authentifié (via JWT)."""
     try:
@@ -205,7 +242,7 @@ def request_password_reset():
         data = request.get_json() or {}
         phone = data.get('phone', '').strip()
 
-        logger.info(f"Password reset requested for phone {_mask_phone(phone)}")
+        logger.info(f"Password reset requested for phone {mask_phone(phone)}")
 
         if not phone:
             logger.warning("Password reset rejected: phone is required")
@@ -214,14 +251,14 @@ def request_password_reset():
         # 1. Vérifier si un compte auth existe
         auth_user = auth_repository.find_by_phone(phone)
         if not auth_user:
-            logger.warning(f"Password reset rejected: no account for {_mask_phone(phone)}")
+            logger.warning(f"Password reset rejected: no account for {mask_phone(phone)}")
             return jsonify({'error': 'Aucun compte associé à ce numéro de téléphone'}), 404
 
         # 2. Récupérer le profil du client pour extraire l'email
         customer = customer_repository.find_by_auth_user_id(auth_user['id'])
         if not customer or not customer.get('email'):
             logger.warning(
-                f"Password reset rejected: no email configured for {_mask_phone(phone)}"
+                f"Password reset rejected: no email configured for {mask_phone(phone)}"
             )
             return jsonify({
                 'error': 'Aucune adresse e-mail n\'est configurée pour ce compte. Veuillez contacter le support.'
@@ -256,14 +293,14 @@ def request_password_reset():
             db.session.rollback()
             logger.error(
                 f"Password reset failed: could not send OTP email to {_mask_email(email)} "
-                f"for {_mask_phone(phone)}"
+                f"for {mask_phone(phone)}"
             )
             return jsonify({'error': 'Erreur lors de l\'envoi de l\'e-mail de vérification'}), 500
 
         db.session.commit()
 
         logger.info(
-            f"Password reset OTP sent to {_mask_email(email)} for {_mask_phone(phone)}"
+            f"Password reset OTP sent to {_mask_email(email)} for {mask_phone(phone)}"
         )
 
         return jsonify({
@@ -273,7 +310,7 @@ def request_password_reset():
 
     except Exception as e:
         db.session.rollback()
-        logger.exception(f"Error during password reset request for {_mask_phone(phone)}: {e}")
+        logger.exception(f"Error during password reset request for {mask_phone(phone)}: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -287,43 +324,43 @@ def reset_password():
         otp_code = data.get('otp_code', '').strip()
         new_password = data.get('new_password', '').strip()
 
-        logger.info(f"Password reset confirmation attempt for {_mask_phone(phone)}")
+        logger.info(f"Password reset confirmation attempt for {mask_phone(phone)}")
 
         if not phone or not otp_code or not new_password:
             logger.warning("Password reset rejected: missing required fields (phone/otp_code/new_password)")
             return jsonify({'error': 'Les champs phone, otp_code et new_password sont obligatoires'}), 400
 
         if len(new_password) < 6:
-            logger.warning(f"Password reset rejected for {_mask_phone(phone)}: password too short")
+            logger.warning(f"Password reset rejected for {mask_phone(phone)}: password too short")
             return jsonify({'error': 'Le mot de passe doit contenir au moins 6 caractères'}), 400
 
         # 1. Valider le code OTP actif
         otp_entry = auth_repository.find_active_otp(phone=phone, otp_code=otp_code)
         if not otp_entry:
-            logger.warning(f"Password reset rejected for {_mask_phone(phone)}: invalid or expired OTP")
+            logger.warning(f"Password reset rejected for {mask_phone(phone)}: invalid or expired OTP")
             return jsonify({'error': 'Code de vérification invalide ou expiré'}), 400
 
         # 2. Mettre à jour le mot de passe dans auth.users
         password_updated = auth_repository.update_password(phone=phone, password=new_password)
         if not password_updated:
-            logger.error(f"Password reset failed for {_mask_phone(phone)}: account not found during update")
+            logger.error(f"Password reset failed for {mask_phone(phone)}: account not found during update")
             return jsonify({'error': 'Compte utilisateur introuvable'}), 404
 
         # 3. Marquer l'OTP comme utilisé
         auth_repository.mark_otp_as_used(otp_entry['id'])
         db.session.commit()
 
-        logger.info(f"Password reset successful for {_mask_phone(phone)}")
+        logger.info(f"Password reset successful for {mask_phone(phone)}")
 
         return jsonify({'message': 'Votre mot de passe a été réinitialisé avec succès'}), 200
 
     except Exception as e:
         db.session.rollback()
-        logger.exception(f"Error during password reset for {_mask_phone(phone)}: {e}")
+        logger.exception(f"Error during password reset for {mask_phone(phone)}: {e}")
         return jsonify({'error': str(e)}), 500
 
 @auth_bp.route('/update', methods=['PUT'])
-@jwt_required()
+@customer_required
 def update_profile():
     """Updates the authenticated customer's profile (name, phone, email).
 
@@ -353,7 +390,7 @@ def update_profile():
         if phone and phone != customer.get('phone'):
             existing = customer_repository.find_by_phone(phone)
             if existing and str(existing['id']) != str(customer_id):
-                logger.warning(f"Profile update rejected for {customer_id}: phone {_mask_phone(phone)} already in use")
+                logger.warning(f"Profile update rejected for {customer_id}: phone {mask_phone(phone)} already in use")
                 return jsonify({'error': 'Ce numéro de téléphone est déjà utilisé par un autre compte'}), 409
 
             if customer.get('auth_user_id') and customer.get('phone'):

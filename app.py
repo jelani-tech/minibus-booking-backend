@@ -12,6 +12,8 @@ from routes.booking import booking_bp
 from routes.payment import payment_bp
 from routes.lines import lines_bp
 from routes.wallet import wallet_bp
+from routes.driver import driver_bp
+from routes.auth_sessions import token_service
 
 from flask_migrate import Migrate, upgrade
 from models.public import db
@@ -112,6 +114,18 @@ def create_app():
     def missing_token_callback(reason):
         return {'error': 'Authentication required', 'code': 'missing_token', 'detail': reason}, 401
 
+    # Chaque access token est rattaché à une session (claim sid) : une session
+    # révoquée (logout, nouveau login chauffeur, verrouillage…) coupe aussitôt
+    # ses access tokens, sans attendre leur expiration.
+    @jwt.token_in_blocklist_loader
+    def session_revoked_check(jwt_header, jwt_payload):
+        session_id = jwt_payload.get('sid')
+        return not session_id or not token_service.is_session_active(session_id)
+
+    @jwt.revoked_token_loader
+    def revoked_token_callback(jwt_header, jwt_payload):
+        return {'error': 'Session revoked', 'code': 'session_revoked'}, 401
+
     # Enable CORS
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
@@ -147,6 +161,7 @@ def create_app():
     app.register_blueprint(payment_bp)
     app.register_blueprint(lines_bp)
     app.register_blueprint(wallet_bp)
+    app.register_blueprint(driver_bp)
 
     from routes.vehicles import vehicles_bp
     app.register_blueprint(vehicles_bp)
