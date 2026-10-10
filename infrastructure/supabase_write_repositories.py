@@ -19,7 +19,7 @@ class SupabaseAuthRepository:
     """Gère les entrées dans auth.users pour l'authentification par mot de passe.
 
     La table auth.users ne contient que le téléphone et le mot de passe hashé
-    (nul pour un compte uniquement chauffeur, dont le PIN est dans auth.user_pins).
+    (nul pour un compte uniquement chauffeur, dont le PIN est dans app_auth.user_pins).
     Le profil métier est dans public.customers (lié via auth_user_id).
     """
 

@@ -17,7 +17,7 @@ from models.public import db
 
 
 class SupabaseRefreshTokenRepository:
-    """auth.app_refresh_tokens : une ligne par refresh token émis.
+    """app_auth.refresh_tokens : une ligne par refresh token émis.
 
     Les lignes d'une même session partagent session_id ; une session est
     active tant qu'elle a une ligne non révoquée et non expirée.
@@ -37,7 +37,7 @@ class SupabaseRefreshTokenRepository:
             db.session.execute(
                 text(
                     """
-                    insert into auth.app_refresh_tokens
+                    insert into app_auth.refresh_tokens
                         (session_id, user_id, audience, token_hash, device_id, expires_at)
                     values (cast(:session_id as uuid), cast(:user_id as uuid), :audience,
                             :token_hash, :device_id, :expires_at)
@@ -64,7 +64,7 @@ class SupabaseRefreshTokenRepository:
         lock = " for update" if for_update else ""
         row = (
             db.session.execute(
-                text(f"select * from auth.app_refresh_tokens where token_hash = :token_hash{lock}"),
+                text(f"select * from app_auth.refresh_tokens where token_hash = :token_hash{lock}"),
                 {"token_hash": token_hash},
             )
             .mappings()
@@ -76,7 +76,7 @@ class SupabaseRefreshTokenRepository:
         db.session.execute(
             text(
                 """
-                update auth.app_refresh_tokens
+                update app_auth.refresh_tokens
                 set revoked_at = timezone('utc', now()),
                     revoked_reason = :reason
                 where id = cast(:id as uuid)
@@ -90,7 +90,7 @@ class SupabaseRefreshTokenRepository:
         result = db.session.execute(
             text(
                 """
-                update auth.app_refresh_tokens
+                update app_auth.refresh_tokens
                 set revoked_at = timezone('utc', now()),
                     revoked_reason = :reason
                 where session_id = cast(:session_id as uuid)
@@ -105,7 +105,7 @@ class SupabaseRefreshTokenRepository:
         result = db.session.execute(
             text(
                 """
-                update auth.app_refresh_tokens
+                update app_auth.refresh_tokens
                 set revoked_at = timezone('utc', now()),
                     revoked_reason = :reason
                 where user_id = cast(:user_id as uuid)
@@ -124,7 +124,7 @@ class SupabaseRefreshTokenRepository:
                     """
                     select exists (
                         select 1
-                        from auth.app_refresh_tokens
+                        from app_auth.refresh_tokens
                         where session_id = cast(:session_id as uuid)
                           and revoked_at is null
                           and expires_at > timezone('utc', now())
@@ -137,7 +137,7 @@ class SupabaseRefreshTokenRepository:
 
 
 class SupabaseUserPinRepository:
-    """auth.user_pins : PIN chauffeur, compteur d'échecs, appareil enregistré."""
+    """app_auth.user_pins : PIN chauffeur, compteur d'échecs, appareil enregistré."""
 
     def get(self, user_id: UUID | str, for_update: bool = False) -> dict[str, Any] | None:
         """Verrouiller la ligne sérialise les logins concurrents d'un même compte
@@ -145,7 +145,7 @@ class SupabaseUserPinRepository:
         lock = " for update" if for_update else ""
         row = (
             db.session.execute(
-                text(f"select * from auth.user_pins where user_id = cast(:user_id as uuid){lock}"),
+                text(f"select * from app_auth.user_pins where user_id = cast(:user_id as uuid){lock}"),
                 {"user_id": str(user_id)},
             )
             .mappings()
@@ -159,7 +159,7 @@ class SupabaseUserPinRepository:
             db.session.execute(
                 text(
                     """
-                    update auth.user_pins
+                    update app_auth.user_pins
                     set failed_attempts = failed_attempts + 1,
                         locked_at = case
                             when failed_attempts + 1 >= :max_attempts
@@ -185,7 +185,7 @@ class SupabaseUserPinRepository:
             db.session.execute(
                 text(
                     """
-                    update auth.user_pins
+                    update app_auth.user_pins
                     set failed_attempts = 0,
                         device_registered_at = case
                             when device_id is null then timezone('utc', now())
@@ -209,7 +209,7 @@ class SupabaseUserPinRepository:
             db.session.execute(
                 text(
                     """
-                    update auth.user_pins
+                    update app_auth.user_pins
                     set pin_hash = :pin_hash,
                         must_change_pin = false,
                         failed_attempts = 0,
@@ -228,7 +228,7 @@ class SupabaseUserPinRepository:
 
 
 class SupabaseLoginAttemptRepository:
-    """auth.login_attempts : journal append-only des tentatives de connexion."""
+    """app_auth.login_attempts : journal append-only des tentatives de connexion."""
 
     def record(
         self,
@@ -245,7 +245,7 @@ class SupabaseLoginAttemptRepository:
         db.session.execute(
             text(
                 """
-                insert into auth.login_attempts
+                insert into app_auth.login_attempts
                     (user_id, audience, phone, device_id, ip_address, user_agent,
                      success, failure_reason)
                 values (cast(:user_id as uuid), :audience, :phone, :device_id, :ip_address,

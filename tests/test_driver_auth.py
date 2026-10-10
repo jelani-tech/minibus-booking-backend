@@ -26,10 +26,10 @@ class DriverAuthTest(BackendApiTestCase):
         self.app.config.update(DRIVER_PIN_MAX_ATTEMPTS=5)
         with self.app.app_context():
             for statement in (
-                "delete from auth.login_attempts where phone = :phone",
+                "delete from app_auth.login_attempts where phone = :phone",
                 "delete from public.customers where phone = :phone",
                 "delete from public.drivers where id = cast(:driver_id as uuid)",
-                # Cascade sur auth.user_pins et auth.app_refresh_tokens.
+                # Cascade sur app_auth.user_pins et app_auth.refresh_tokens.
                 "delete from auth.users where phone = :phone",
             ):
                 db.session.execute(
@@ -61,7 +61,7 @@ class DriverAuthTest(BackendApiTestCase):
             db.session.execute(
                 db.text(
                     """
-                    insert into auth.user_pins (user_id, pin_hash, must_change_pin)
+                    insert into app_auth.user_pins (user_id, pin_hash, must_change_pin)
                     values (cast(:user_id as uuid), :pin_hash, true)
                     """
                 ),
@@ -104,7 +104,7 @@ class DriverAuthTest(BackendApiTestCase):
     def pin_row(self):
         with self.app.app_context():
             return db.session.execute(
-                db.text("select * from auth.user_pins where user_id = cast(:id as uuid)"),
+                db.text("select * from app_auth.user_pins where user_id = cast(:id as uuid)"),
                 {"id": DRIVER_AUTH_USER_ID},
             ).mappings().one()
 
@@ -113,7 +113,7 @@ class DriverAuthTest(BackendApiTestCase):
             return db.session.execute(
                 db.text(
                     """
-                    select * from auth.login_attempts
+                    select * from app_auth.login_attempts
                     where phone = :phone
                     order by created_at desc
                     limit 1

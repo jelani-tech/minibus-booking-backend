@@ -1,7 +1,7 @@
 """Authentification des chauffeurs : téléphone + PIN, compte lié à un appareil.
 
 - Tout échec de login lève AuthenticationFailed avec une raison qui ne va que
-  dans le journal (auth.login_attempts) : la route renvoie toujours le même 401.
+  dans le journal (app_auth.login_attempts) : la route renvoie toujours le même 401.
 - 5 PIN incorrects verrouillent le compte ; seul un reset PIN admin débloque.
 - Le premier login réussi enregistre l'appareil ; un autre appareil est refusé.
 - Un login réussi révoque les sessions précédentes : une seule session chauffeur.
