@@ -114,8 +114,12 @@ class SupabaseTripRepository:
         destination_name: str | None = None,
         trip_date: date | None = None,
     ) -> list[dict[str, Any]]:
+        from infrastructure.supabase_write_repositories import SupabaseBookingRepository
+        SupabaseBookingRepository().expire_pending()
+        db.session.commit()
         clauses = [
-            "t.status in ('scheduled', 'boarding')",
+            "t.status = 'scheduled'",
+            "least(t.booking_close_at, t.planned_start_datetime) > clock_timestamp()",
             "t.capacity_available > 0",
         ]
         params: dict[str, Any] = {}
@@ -203,6 +207,9 @@ class SupabaseTripRepository:
         return trip_from_row(row) if row else None
 
     def get_by_line_code(self, line_code: str) -> list[dict[str, Any]]:
+        from infrastructure.supabase_write_repositories import SupabaseBookingRepository
+        SupabaseBookingRepository().expire_pending()
+        db.session.commit()
         rows = db.session.execute(
             text(
                 """
@@ -227,6 +234,8 @@ class SupabaseTripRepository:
                 left join public.drivers d on d.id = t.driver_id
                 where upper(l.code) = upper(:line_code)
                   and t.status = 'scheduled'
+                  and least(t.booking_close_at, t.planned_start_datetime) > clock_timestamp()
+                  and t.capacity_available > 0
                 order by t.planned_start_datetime
                 """
             ),

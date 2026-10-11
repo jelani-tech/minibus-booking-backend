@@ -396,6 +396,63 @@ class SupabaseCustomerRepository:
 
 
 class SupabaseBookingRepository:
+    def expire_pending(self, trip_id=None, customer_id=None):
+        """Lock trips before bookings, like create/payment/scan, then release holds.
+
+        Existing capacity triggers recalculate the inventory in this transaction.
+        The CLI runs this periodically; reads also expire holds before returning.
+        """
+        params = {"trip_id": str(trip_id) if trip_id else None,
+                  "customer_id": str(customer_id) if customer_id else None}
+        due = """b.booking_status = 'pending' and (
+            coalesce(b.expires_at, b.created_at + interval '15 minutes') <= clock_timestamp()
+            or least(t.booking_close_at, t.planned_start_datetime) <= clock_timestamp()
+            or t.status <> 'scheduled')"""
+        trips = db.session.execute(text(f"""
+            select t.id from public.trips t
+            where (:trip_id is null or t.id = cast(:trip_id as uuid))
+              and exists (select 1 from public.bookings b where b.trip_id = t.id
+                and (:customer_id is null or b.customer_id = cast(:customer_id as uuid))
+                and {due})
+            order by t.id for update of t
+        """), params).scalars().all()
+        count = 0
+        for target in trips:
+            result = db.session.execute(text(f"""
+                update public.bookings b set booking_status = 'expired', updated_at = now()
+                from public.trips t where t.id = b.trip_id
+                and t.id = cast(:target as uuid) and {due}
+            """), {"target": str(target)})
+            count += result.rowcount
+        return count
+
+    def lock(self, booking_id):
+        # Global lock order: trip -> booking -> payment -> wallet.
+        db.session.execute(text("""
+            select t.id from public.trips t join public.bookings b on b.trip_id = t.id
+            where b.id = cast(:id as uuid) for update of t
+        """), {"id": str(booking_id)}).first()
+        db.session.execute(text("""
+            select id from public.bookings where id = cast(:id as uuid) for update
+        """), {"id": str(booking_id)}).first()
+
+    def consume_ticket(self, reference, trip_id):
+        from services.booking_lifecycle import lifecycle
+        booking = self.get_by_reference(reference)
+        if not booking or str(booking["trip_id"]) != str(trip_id):
+            raise ValueError("TICKET_NOT_FOUND")
+        self.lock(booking["booking_id"])
+        booking = self.get(booking["booking_id"])
+        if booking["booking_status"] in ("boarded", "completed"):
+            raise ValueError("TICKET_ALREADY_USED")
+        if not lifecycle(booking)["can_board"]:
+            raise ValueError("TICKET_NOT_VALID")
+        db.session.execute(text("""
+            update public.bookings set booking_status = 'boarded', updated_at = now()
+            where id = cast(:id as uuid) and booking_status = 'confirmed'
+        """), {"id": str(booking["booking_id"])})
+        return self.get(booking["booking_id"])
+
     def create(
         self,
         *,
@@ -422,13 +479,18 @@ class SupabaseBookingRepository:
         )
         if not trip:
             raise ValueError("Trip not found")
-        if trip["status"] not in ("scheduled", "boarding"):
+        from services.booking_lifecycle import sale_open, sales_close
+        self.expire_pending(trip_id=trip_id)
+        trip = db.session.execute(text("select * from public.trips where id = cast(:id as uuid)"), {"id": str(trip_id)}).mappings().one()
+        if not sale_open(trip):
             raise ValueError("Trip is not available for booking")
+        if seats_reserved < 1:
+            raise ValueError("number_of_seats must be positive")
         if seats_reserved > trip["capacity_available"]:
             raise ValueError("Not enough seats available")
 
         unit_price = trip["base_price"] or 0
-        ticket_reference = f"JELANI-{str(uuid4()).split('-')[0].upper()}"
+        ticket_reference = f"JELANI-{uuid4().hex.upper()}"
         row = (
             db.session.execute(
                 text(
@@ -445,6 +507,7 @@ class SupabaseBookingRepository:
                         pickup_stop_id,
                         dropoff_stop_id,
                         external_reference,
+                        expires_at,
                         notes
                     )
                     values (
@@ -459,6 +522,8 @@ class SupabaseBookingRepository:
                         :pickup_stop_id,
                         :dropoff_stop_id,
                         :external_reference,
+                        least(clock_timestamp() + interval '15 minutes',
+                              :sales_close),
                         :notes
                     )
                     returning id
@@ -471,6 +536,7 @@ class SupabaseBookingRepository:
                     "unit_price": unit_price,
                     "total_price": unit_price * seats_reserved,
                     "external_reference": ticket_reference,
+                    "sales_close": sales_close(trip),
                     "pickup_stop_id": str(pickup_stop_id),
                     "dropoff_stop_id": str(dropoff_stop_id),
                     "notes": "Payment canal: app"
@@ -483,6 +549,7 @@ class SupabaseBookingRepository:
         return self.get(row["id"])
 
     def list_for_customer(self, customer_id: UUID | str) -> list[dict[str, Any]]:
+        self.expire_pending(customer_id=customer_id)
         rows = db.session.execute(
             text(
                 f"""
@@ -533,6 +600,7 @@ class SupabaseBookingRepository:
         customer_id: UUID | str,
         cutoff_minutes: int = 60,
     ) -> dict[str, Any]:
+        self.lock(booking_id)
         existing = self.get(booking_id)
         if not existing:
             raise ValueError("Booking not found")
@@ -540,6 +608,11 @@ class SupabaseBookingRepository:
             raise PermissionError("Unauthorized")
         if existing["booking_status"] == "cancelled":
             raise ValueError("Booking already cancelled")
+        if existing["booking_status"] not in ("pending", "confirmed"):
+            raise ValueError("Booking cannot be cancelled")
+        from services.booking_lifecycle import lifecycle
+        if lifecycle(existing)["journey_status"] not in ("upcoming", "boarding"):
+            raise ValueError("Booking cannot be cancelled")
 
         # Fenêtre d'annulation : refusée à moins de cutoff_minutes du départ
         # (couvre aussi les trips déjà partis).
@@ -590,49 +663,23 @@ class SupabasePaymentRepository:
         provider_payment_url: str | None,
         raw_provider_response: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Reutilise la ligne de paiement non soldee du booking (relance de
-        checkout) plutot que d'en inserer une nouvelle : GET /status renvoie la
-        ligne la plus recente, qui doit suivre la derniere reference emise."""
+        """Keep every provider attempt addressable by its original reference.
+
+        Pending checkout reuse happens at the route. A new attempt after a
+        failure inserts a new row so a late capture of the old reference can
+        still be reconciled, instead of silently disappearing.
+        """
         raw_response_json = (
             json.dumps(raw_provider_response, default=str)
             if raw_provider_response is not None
             else None
         )
 
-        existing = self.get_for_booking(booking_id)
-        if existing and existing["status"] not in SETTLED_SUCCESS_STATUSES:
-            row = (
-                db.session.execute(
-                    text(
-                        """
-                        update public.payments
-                        set customer_id = cast(:customer_id as uuid),
-                            amount = :amount,
-                            provider = :provider,
-                            provider_reference = :provider_reference,
-                            provider_payment_url = :provider_payment_url,
-                            status = 'pending',
-                            paid_at = null,
-                            raw_provider_response = cast(:raw_provider_response as jsonb),
-                            updated_at = timezone('utc', now())
-                        where id = cast(:payment_id as uuid)
-                        returning *
-                        """
-                    ),
-                    {
-                        "payment_id": str(existing["id"]),
-                        "customer_id": str(customer_id),
-                        "amount": amount,
-                        "provider": provider,
-                        "provider_reference": provider_reference,
-                        "provider_payment_url": provider_payment_url,
-                        "raw_provider_response": raw_response_json,
-                    },
-                )
-                .mappings()
-                .one()
-            )
-            return dict(row)
+        existing = self.get_by_reference(provider_reference)
+        if existing:
+            if str(existing["booking_id"]) != str(booking_id):
+                raise ValueError("Payment reference belongs to another booking")
+            return existing
 
         row = (
             db.session.execute(
@@ -686,7 +733,7 @@ class SupabasePaymentRepository:
                     select *
                     from public.payments
                     where booking_id = cast(:booking_id as uuid)
-                    order by created_at desc
+                    order by case when status in ('success', 'paid', 'completed') then 0 else 1 end, created_at desc, id
                     limit 1
                     """
                 ),
@@ -698,6 +745,10 @@ class SupabasePaymentRepository:
         return dict(row) if row else None
 
     def get_by_reference(self, provider_reference: str, for_update: bool = False) -> dict[str, Any] | None:
+        if for_update:
+            target = db.session.execute(text("select booking_id from public.payments where provider_reference = :ref"), {"ref": provider_reference}).scalar()
+            if target:
+                SupabaseBookingRepository().lock(target)
         lock_clause = " for update" if for_update else ""
         row = (
             db.session.execute(
@@ -731,7 +782,17 @@ class SupabasePaymentRepository:
 
         Retourne (ligne payment, booking mis a jour ou non).
         """
-        booking_payment_status = "paid" if payment_status == "success" else "failed"
+        existing_payment = self.get_by_reference(provider_reference, for_update=True)
+        if not existing_payment:
+            return None, False
+        booking_repo = SupabaseBookingRepository()
+        booking_repo.expire_pending(trip_id=booking_repo.get(existing_payment["booking_id"])["trip_id"])
+        from services.booking_lifecycle import payable
+        can_confirm = payable(booking_repo.get(existing_payment["booking_id"]))
+        late_success = payment_status == "success" and not can_confirm
+        if late_success:
+            payment_status = "refund_required"
+        booking_payment_status = "paid" if payment_status in ("success", "refund_required") else "failed"
         booking_status = "confirmed" if payment_status == "success" else "pending"
         row = (
             db.session.execute(
@@ -740,7 +801,7 @@ class SupabasePaymentRepository:
                     update public.payments
                     set status = :payment_status,
                         paid_at = case
-                            when :payment_status = 'success' then coalesce(paid_at, timezone('utc', now()))
+                            when :payment_status in ('success', 'refund_required') then coalesce(paid_at, timezone('utc', now()))
                             else paid_at
                         end,
                         raw_provider_response = coalesce(
@@ -767,6 +828,13 @@ class SupabasePaymentRepository:
         )
         if not row:
             return None, False
+
+        if late_success:
+            db.session.execute(text("""
+                update public.bookings set payment_status = 'paid', updated_at = now()
+                where id = cast(:id as uuid)
+            """), {"id": str(row["booking_id"])})
+            return dict(row), False
 
         booking_row = db.session.execute(
             text(

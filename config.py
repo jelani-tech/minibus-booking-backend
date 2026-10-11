@@ -24,6 +24,9 @@ class Config:
     AUTO_UPGRADE_DB = os.environ.get('AUTO_UPGRADE_DB', 'false').lower() == 'true'
     LEGACY_SCHEMA_BOOTSTRAP = os.environ.get('LEGACY_SCHEMA_BOOTSTRAP', 'false').lower() == 'true'
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
+    TICKET_SCANNER_CUSTOMER_IDS = tuple(
+        value.strip() for value in os.environ.get('TICKET_SCANNER_CUSTOMER_IDS', '').split(',') if value.strip()
+    )
     JWT_ACCESS_TOKEN_EXPIRES = 86400  # 24 hours
     
     # Payment service API keys

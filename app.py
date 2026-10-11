@@ -123,6 +123,21 @@ def create_app():
     _require_secrets(app)
     _require_payment_provider_config(app)
 
+    # Per-request SQL timings, installed once on this app's engine.
+    from sqlalchemy import event
+    from flask import g, has_request_context
+    from time import perf_counter
+    with app.app_context():
+        @event.listens_for(db.engine, 'before_cursor_execute')
+        def sql_started(conn, cursor, statement, parameters, context, executemany):
+            context.audit_started = perf_counter()
+
+        @event.listens_for(db.engine, 'after_cursor_execute')
+        def sql_finished(conn, cursor, statement, parameters, context, executemany):
+            if has_request_context():
+                g.sql_ms = getattr(g, 'sql_ms', 0) + (perf_counter() - context.audit_started) * 1000
+                g.sql_count = getattr(g, 'sql_count', 0) + 1
+
     # Multi-schema project (public/clients/partners):
     # include_schemas=True is required so Alembic autogenerate can resolve
     # cross-schema foreign keys (e.g. public.steps -> partners.partners).
@@ -160,11 +175,30 @@ def create_app():
         return {'status': 'healthy'}, 200
 
 
+    @app.before_request
+    def start_request_timer():
+        from flask import g
+        from time import perf_counter
+        g.request_started = perf_counter()
+
+    @app.cli.command("expire-bookings")
+    def expire_bookings():
+        """Release expired holds; schedule every minute on the server."""
+        from infrastructure.supabase_write_repositories import SupabaseBookingRepository
+        count = SupabaseBookingRepository().expire_pending()
+        db.session.commit()
+        click.echo(f"Expired {count} booking(s)")
+
     @app.after_request
     def log_request(response):
-        from flask import request
+        from flask import request, g
+        from time import perf_counter
+        duration = (perf_counter() - g.request_started) * 1000
+        sql_ms = getattr(g, "sql_ms", 0)
+        sql_count = getattr(g, "sql_count", 0)
+        response.headers["Server-Timing"] = f"app;dur={duration:.1f}, sql;dur={sql_ms:.1f}"
         logger.info(
-            f"{request.method} {request.path} -> {response.status_code}"
+            f"{request.method} {request.path} -> {response.status_code} duration_ms={duration:.1f} sql_ms={sql_ms:.1f} sql_count={sql_count}"
         )
         return response
 

@@ -262,3 +262,7 @@ Prevoir en production:
 - configuration Paystack reelle
 - webhook paiement expose en HTTPS
 - logs applicatifs et supervision
+
+## Corrections de l’audit mobile MVP
+
+Voir [le suivi des constats, tests et étapes de déploiement](docs/AUDIT_MVP.md).
