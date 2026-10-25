@@ -18,3 +18,4 @@ ENV/
 /.idea
 
 .vscode/launch.json
+.env.prod

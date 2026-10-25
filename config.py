@@ -66,6 +66,12 @@ class Config:
         os.environ.get('BOOKING_CANCELLATION_CUTOFF_MINUTES') or 60
     )
 
+    # Délai limite avant le départ pour réserver ou payer un trajet (en minutes).
+    # 0 = jusqu'à l'heure exacte de départ.
+    BOOKING_DEPARTURE_CUTOFF_MINUTES = int(
+        os.environ.get('BOOKING_DEPARTURE_CUTOFF_MINUTES') or 0
+    )
+
     # Deep link mobile (ex: jelani://payment-callback) vers lequel la page
     # /api/payments/callback rebondit a la fin du checkout, pour ramener dans
     # l'app. Il n'est jamais transmis au provider : JEKO n'accepte que des URLs

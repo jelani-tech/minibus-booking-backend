@@ -4,6 +4,7 @@ from datetime import date
 from typing import Any
 from uuid import UUID
 
+from flask import current_app
 from sqlalchemy import text
 
 from domain.entities import Line, LineStop, Stop, StopStatus

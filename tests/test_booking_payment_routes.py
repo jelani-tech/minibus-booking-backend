@@ -54,9 +54,8 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
                     set booking_close_at = null,
                         planned_end_datetime = timezone('utc', now()) + interval '2 days',
                         status = 'scheduled',
-                        capacity_booked = 0,
-                        capacity_available = capacity_total - capacity_blocked,
-                        planned_start_datetime = timezone('utc', now()) + interval '1 day'
+                        planned_start_datetime = timezone('utc', now()) + interval '1 day';
+                    select recalculate_trip_capacity(id) from public.trips;
                     """
                 )
             )
@@ -1263,12 +1262,16 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         trip_id = self.first_trip_id()
         pickup, dropoff = self.trip_stop_ids(trip_id)
         self.audit_update("update public.trips set planned_start_datetime = now() - interval '1 day' where id = cast(:id as uuid)", id=trip_id)
-        self.assertEqual(self.client.get('/api/trips').get_json()['trips'], [])
+        trips_ids = [t['id'] for t in self.client.get('/api/trips').get_json()['trips']]
+        self.assertNotIn(trip_id, trips_ids)
         response = self.client.post('/api/bookings', headers=self.auth_headers(), json={
             'trip_id': trip_id, 'number_of_seats': 1, 'pickup_stop_id': pickup, 'dropoff_stop_id': dropoff})
         self.assertEqual(response.status_code, 400)
 
     def test_audit_expiry_releases_capacity_and_prevents_provider_call(self):
+        trip_id = self.first_trip_id()
+        trip_before = self.client.get('/api/trips/' + trip_id).get_json()['trip']
+        initial_booked = trip_before['capacity_booked']
         booking, request_headers = self.create_booking()
         headers = {"Authorization": request_headers["Authorization"]}
         self.audit_update("update public.bookings set expires_at = now() - interval '1 second' where id = cast(:id as uuid)", id=booking['id'])
@@ -1279,7 +1282,7 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
             provider.assert_not_called()
         self.assertEqual(self.booking_row(booking['id'])['booking_status'], 'expired')
         trip = self.client.get('/api/trips/' + booking['trip_id']).get_json()['trip']
-        self.assertEqual(trip['capacity_booked'], 0)
+        self.assertEqual(trip['capacity_booked'], initial_booked)
         row = self.client.get('/api/bookings/' + booking['id'], headers=headers).get_json()['booking']
         self.assertFalse(row['can_pay'])
         self.assertIsNone(row['qr_payload'])
