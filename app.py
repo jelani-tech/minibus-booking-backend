@@ -172,7 +172,13 @@ def create_app():
 
     @app.route('/health', methods=['GET'])
     def health():
-        return {'status': 'healthy'}, 200
+        from sqlalchemy import text
+        try:
+            db.session.execute(text("SELECT 1"))
+            return {'status': 'healthy', 'database': 'connected'}, 200
+        except Exception as exc:
+            logger.error(f"Healthcheck database error: {exc}")
+            return {'status': 'unhealthy', 'database': 'disconnected', 'error': 'Database unavailable'}, 503
 
 
     @app.before_request
@@ -197,6 +203,11 @@ def create_app():
         sql_ms = getattr(g, "sql_ms", 0)
         sql_count = getattr(g, "sql_count", 0)
         response.headers["Server-Timing"] = f"app;dur={duration:.1f}, sql;dur={sql_ms:.1f}"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
         logger.info(
             f"{request.method} {request.path} -> {response.status_code} duration_ms={duration:.1f} sql_ms={sql_ms:.1f} sql_count={sql_count}"
         )
@@ -224,7 +235,7 @@ def create_app():
             docker exec minibus_local_backend flask seed-lines --file /app/other.xlsx
         """
         if current_app.config.get("APP_ENV") != "development":
-            click.echo("❌ Cette commande n'est disponible qu'en environnement 'development'.", err=True)
+            click.echo("[ERROR] Cette commande n'est disponible qu'en environnement 'development'.", err=True)
             raise SystemExit(1)
         from services.import_lines import import_lines_from_excel
         import_lines_from_excel(file_path=file)
@@ -269,9 +280,9 @@ def create_app():
             click.echo(f"{expired} rechargement(s) expiré(s)")
 
         if divergences:
-            click.echo(f"❌ {len(divergences)} wallet(s) en écart", err=True)
+            click.echo(f"[ERROR] {len(divergences)} wallet(s) en écart", err=True)
             raise SystemExit(1)
-        click.echo("✅ Aucun écart entre les soldes et le registre")
+        click.echo("[OK] Aucun écart entre les soldes et le registre")
 
     return app
 

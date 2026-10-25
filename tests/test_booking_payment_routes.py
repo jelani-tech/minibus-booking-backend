@@ -1353,7 +1353,13 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         trip_id = self.first_trip_id()
         pickup, dropoff = self.trip_stop_ids(trip_id)
         headers = self.auth_headers()
-        self.audit_update("update public.trips set capacity_total = 1 where id = cast(:id as uuid)", id=trip_id)
+        with self.app.app_context():
+            from models.public import db
+            booked = db.session.execute(
+                db.text("select coalesce(capacity_booked, 0) from public.trips where id = cast(:id as uuid)"),
+                {"id": trip_id},
+            ).scalar() or 0
+        self.audit_update("update public.trips set capacity_total = :cap where id = cast(:id as uuid)", id=trip_id, cap=booked + 1)
         barrier = Barrier(2)
         def reserve():
             with self.app.test_client() as client:
