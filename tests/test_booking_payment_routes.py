@@ -54,7 +54,14 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
                     set booking_close_at = null,
                         planned_end_datetime = timezone('utc', now()) + interval '2 days',
                         status = 'scheduled',
-                        planned_start_datetime = timezone('utc', now()) + interval '1 day';
+                        planned_start_datetime = timezone('utc', now()) + interval '1 day'
+                    where id not in (
+                        '77777777-7777-7777-7777-777777777701',
+                        '77777777-7777-7777-7777-777777777702',
+                        '77777777-7777-7777-7777-777777777703',
+                        '77777777-7777-7777-7777-777777777704',
+                        '77777777-7777-7777-7777-777777777705'
+                    );
                     select recalculate_trip_capacity(id) from public.trips;
                     """
                 )
@@ -1261,12 +1268,15 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
     def test_audit_past_trip_cannot_be_searched_or_booked(self):
         trip_id = self.first_trip_id()
         pickup, dropoff = self.trip_stop_ids(trip_id)
-        self.audit_update("update public.trips set planned_start_datetime = now() - interval '1 day' where id = cast(:id as uuid)", id=trip_id)
-        trips_ids = [t['id'] for t in self.client.get('/api/trips').get_json()['trips']]
-        self.assertNotIn(trip_id, trips_ids)
-        response = self.client.post('/api/bookings', headers=self.auth_headers(), json={
-            'trip_id': trip_id, 'number_of_seats': 1, 'pickup_stop_id': pickup, 'dropoff_stop_id': dropoff})
-        self.assertEqual(response.status_code, 400)
+        try:
+            self.audit_update("update public.trips set planned_start_datetime = now() - interval '1 day' where id = cast(:id as uuid)", id=trip_id)
+            trips_ids = [t['id'] for t in self.client.get('/api/trips').get_json()['trips']]
+            self.assertNotIn(trip_id, trips_ids)
+            response = self.client.post('/api/bookings', headers=self.auth_headers(), json={
+                'trip_id': trip_id, 'number_of_seats': 1, 'pickup_stop_id': pickup, 'dropoff_stop_id': dropoff})
+            self.assertEqual(response.status_code, 400)
+        finally:
+            self.audit_update("update public.trips set planned_start_datetime = now() + interval '1 day' where id = cast(:id as uuid)", id=trip_id)
 
     def test_audit_expiry_releases_capacity_and_prevents_provider_call(self):
         trip_id = self.first_trip_id()
@@ -1319,33 +1329,39 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
     def test_audit_scan_requires_operator_and_consumes_once(self):
         headers, booking, payment = self.initiate_pending_payment()
         self.post_payment_webhook(self.paystack_transaction_data(payment))
-        self.audit_update("update public.trips set planned_start_datetime = now() + interval '10 minutes', planned_end_datetime = now() + interval '2 hours' where id = cast(:id as uuid)", id=booking['trip_id'])
-        url = '/api/bookings/ticket/' + booking['ticket_reference'] + '/consume'
-        payload = {'trip_id': booking['trip_id']}
-        self.assertEqual(self.client.post(url, json=payload).status_code, 401)
-        self.assertEqual(self.client.post(url, headers=headers, json=payload).status_code, 403)
-        self.app.config['TICKET_SCANNER_CUSTOMER_IDS'] = (TEST_CUSTOMER_ID,)
         try:
-            wrong_trip = self.client.post(url, headers=headers, json={'trip_id': str(uuid4())})
-            self.assertEqual(wrong_trip.status_code, 409)
-            first = self.client.post(url, headers=headers, json=payload)
-            self.assertEqual(first.status_code, 200)
-            self.assertEqual(first.get_json()['booking']['journey_status'], 'boarded')
-            second = self.client.post(url, headers=headers, json=payload)
-            self.assertEqual(second.status_code, 409)
-            self.assertEqual(second.get_json()['code'], 'TICKET_ALREADY_USED')
+            self.audit_update("update public.trips set planned_start_datetime = now() + interval '10 minutes', planned_end_datetime = now() + interval '2 hours' where id = cast(:id as uuid)", id=booking['trip_id'])
+            url = '/api/bookings/ticket/' + booking['ticket_reference'] + '/consume'
+            payload = {'trip_id': booking['trip_id']}
+            self.assertEqual(self.client.post(url, json=payload).status_code, 401)
+            self.assertEqual(self.client.post(url, headers=headers, json=payload).status_code, 403)
+            self.app.config['TICKET_SCANNER_CUSTOMER_IDS'] = (TEST_CUSTOMER_ID,)
+            try:
+                wrong_trip = self.client.post(url, headers=headers, json={'trip_id': str(uuid4())})
+                self.assertEqual(wrong_trip.status_code, 409)
+                first = self.client.post(url, headers=headers, json=payload)
+                self.assertEqual(first.status_code, 200)
+                self.assertEqual(first.get_json()['booking']['journey_status'], 'boarded')
+                second = self.client.post(url, headers=headers, json=payload)
+                self.assertEqual(second.status_code, 409)
+                self.assertEqual(second.get_json()['code'], 'TICKET_ALREADY_USED')
+            finally:
+                self.app.config['TICKET_SCANNER_CUSTOMER_IDS'] = ()
         finally:
-            self.app.config['TICKET_SCANNER_CUSTOMER_IDS'] = ()
+            self.audit_update("update public.trips set planned_start_datetime = now() + interval '1 day', planned_end_datetime = now() + interval '1 day' + interval '3 hours' where id = cast(:id as uuid)", id=booking['trip_id'])
 
     def test_audit_completed_journey_has_no_active_actions(self):
         headers, booking, payment = self.initiate_pending_payment()
         self.post_payment_webhook(self.paystack_transaction_data(payment))
-        self.audit_update("update public.trips set planned_start_datetime = now() - interval '2 hours', planned_end_datetime = now() - interval '1 hour' where id = cast(:id as uuid)", id=booking['trip_id'])
-        row = self.client.get('/api/bookings/' + booking['id'], headers=headers).get_json()['booking']
-        self.assertEqual(row['journey_status'], 'no_show')
-        for key in ('can_pay', 'can_cancel', 'can_show_ticket', 'can_board'):
-            self.assertFalse(row[key])
-        self.assertIsNone(row['qr_payload'])
+        try:
+            self.audit_update("update public.trips set planned_start_datetime = now() - interval '2 hours', planned_end_datetime = now() - interval '1 hour' where id = cast(:id as uuid)", id=booking['trip_id'])
+            row = self.client.get('/api/bookings/' + booking['id'], headers=headers).get_json()['booking']
+            self.assertEqual(row['journey_status'], 'no_show')
+            for key in ('can_pay', 'can_cancel', 'can_show_ticket', 'can_board'):
+                self.assertFalse(row[key])
+            self.assertIsNone(row['qr_payload'])
+        finally:
+            self.audit_update("update public.trips set planned_start_datetime = now() + interval '1 day', planned_end_datetime = now() + interval '1 day' + interval '3 hours' where id = cast(:id as uuid)", id=booking['trip_id'])
 
     def test_audit_last_seat_cannot_be_booked_twice_concurrently(self):
         from concurrent.futures import ThreadPoolExecutor

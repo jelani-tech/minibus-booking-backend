@@ -122,9 +122,10 @@ ON CONFLICT (line_id, stop_order) DO NOTHING;
 
 -- ------------------------------------------------------------------------------
 -- 3. COMPTES UTILISATEURS (AUTH + CUSTOMER + WALLET)
--- Mot de passe : Password123!
+-- Mot de passe universel : Password123!
 -- ------------------------------------------------------------------------------
--- Utilisateur 1 : Client Pilote Principal (avec solde wallet de 50 000 FCFA)
+
+-- 3.1. Utilisateur 1 : Client Pilote Principal (avec solde wallet de 50 000 FCFA)
 INSERT INTO auth.users (id, phone, encrypted_password)
 VALUES
     ('99999999-9999-9999-9999-999999999991', '+2250101010101', '$2b$12$b1U49zKvNOPCTPe/xxkN4O23JkJ3D0i2XaOTBYNQ1jXqkFJ2ka1xK');
@@ -138,17 +139,43 @@ VALUES
     ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', '88888888-8888-8888-8888-888888888881', 'XOF', 0, 'active');
 
 -- Inscription comptable dans le registre wallet_entries (double-entry bookkeeping)
+-- Etape a : Crédit initial de 57 000 FCFA
 INSERT INTO public.wallet_entries (
-    wallet_id, direction, entry_type, amount, balance_after, idempotency_key, description
+    id, wallet_id, direction, entry_type, amount, balance_after, idempotency_key, description, created_at
 ) VALUES (
-    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', 'credit', 'adjustment', 50000, 50000, 'seed-wallet-init-jean', 'Crédit initial compte de test'
+    '11111111-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', 'credit', 'adjustment', 57000, 57000, 'seed-wallet-init-jean', 'Crédit initial compte de test', NOW() - INTERVAL '2 hours'
 );
+UPDATE public.wallets SET balance = 57000 WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
 
-UPDATE public.wallets
-SET balance = 50000
-WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
+-- Etape b : Débit de 5 000 FCFA pour paiement réservation JELANI-TEST-UPCOMING
+INSERT INTO public.wallet_entries (
+    id, wallet_id, direction, entry_type, amount, balance_after, reference_type, reference_id, idempotency_key, description, created_at
+) VALUES (
+    '11111111-aaaa-aaaa-aaaa-aaaaaaaaaaa2',
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', 'debit', 'booking_payment', 5000, 52000, 'booking', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3', 'seed-wallet-pay-upcoming', 'Paiement réservation JELANI-TEST-UPCOMING', NOW() - INTERVAL '1 hour'
+);
+UPDATE public.wallets SET balance = 52000 WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
 
--- Utilisateur 2 : Client avec solde wallet nul (pour tester Mobile Money Jèko/Wave)
+-- Etape c : Débit de 1 000 FCFA pour paiement réservation JELANI-TEST-BOARDING
+INSERT INTO public.wallet_entries (
+    id, wallet_id, direction, entry_type, amount, balance_after, reference_type, reference_id, idempotency_key, description, created_at
+) VALUES (
+    '11111111-aaaa-aaaa-aaaa-aaaaaaaaaaa3',
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', 'debit', 'booking_payment', 1000, 51000, 'booking', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4', 'seed-wallet-pay-boarding', 'Paiement réservation JELANI-TEST-BOARDING', NOW() - INTERVAL '20 minutes'
+);
+UPDATE public.wallets SET balance = 51000 WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
+
+-- Etape d : Débit de 1 000 FCFA pour paiement réservation JELANI-TEST-BOARDED
+INSERT INTO public.wallet_entries (
+    id, wallet_id, direction, entry_type, amount, balance_after, reference_type, reference_id, idempotency_key, description, created_at
+) VALUES (
+    '11111111-aaaa-aaaa-aaaa-aaaaaaaaaaa4',
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', 'debit', 'booking_payment', 1000, 50000, 'booking', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb5', 'seed-wallet-pay-boarded', 'Paiement réservation JELANI-TEST-BOARDED', NOW() - INTERVAL '15 minutes'
+);
+UPDATE public.wallets SET balance = 50000 WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
+
+-- 3.2. Utilisateur 2 : Client avec solde wallet nul (pour tester Mobile Money Jèko/Wave)
 INSERT INTO auth.users (id, phone, encrypted_password)
 VALUES
     ('99999999-9999-9999-9999-999999999992', '+2250202020202', '$2b$12$b1U49zKvNOPCTPe/xxkN4O23JkJ3D0i2XaOTBYNQ1jXqkFJ2ka1xK');
@@ -161,7 +188,7 @@ INSERT INTO public.wallets (id, customer_id, currency, balance, status)
 VALUES
     ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2', '88888888-8888-8888-8888-888888888882', 'XOF', 0, 'active');
 
--- Utilisateur 3 : Opérateur de Gare / Contrôleur (pour scanner et embarquer)
+-- 3.3. Utilisateur 3 : Opérateur de Gare / Contrôleur (pour scanner et embarquer)
 INSERT INTO auth.users (id, phone, encrypted_password)
 VALUES
     ('99999999-9999-9999-9999-999999999993', '+2250303030303', '$2b$12$b1U49zKvNOPCTPe/xxkN4O23JkJ3D0i2XaOTBYNQ1jXqkFJ2ka1xK');
@@ -173,6 +200,43 @@ VALUES
 INSERT INTO public.wallets (id, customer_id, currency, balance, status)
 VALUES
     ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3', '88888888-8888-8888-8888-888888888883', 'XOF', 0, 'active');
+
+-- 3.4. Alignement des comptes complémentaires pour tests développeurs
+-- Jean Client (+2250100000003)
+UPDATE auth.users
+SET encrypted_password = '$2b$12$b1U49zKvNOPCTPe/xxkN4O23JkJ3D0i2XaOTBYNQ1jXqkFJ2ka1xK'
+WHERE phone = '+2250100000003';
+
+-- Jean-Eudes KACOU (1234567890)
+UPDATE auth.users
+SET encrypted_password = '$2b$12$b1U49zKvNOPCTPe/xxkN4O23JkJ3D0i2XaOTBYNQ1jXqkFJ2ka1xK'
+WHERE phone = '1234567890';
+
+DO $$
+DECLARE
+    v_wallet_id uuid;
+    v_customer_id uuid;
+BEGIN
+    SELECT id INTO v_customer_id FROM public.customers WHERE phone = '1234567890';
+    IF v_customer_id IS NOT NULL THEN
+        SELECT id INTO v_wallet_id FROM public.wallets WHERE customer_id = v_customer_id;
+        IF v_wallet_id IS NULL THEN
+            INSERT INTO public.wallets (customer_id, currency, balance, status)
+            VALUES (v_customer_id, 'XOF', 0, 'active')
+            RETURNING id INTO v_wallet_id;
+        END IF;
+
+        DELETE FROM public.wallet_entries WHERE wallet_id = v_wallet_id AND idempotency_key = 'seed-wallet-init-jeaneudes';
+        UPDATE public.wallets SET balance = 0 WHERE id = v_wallet_id;
+
+        INSERT INTO public.wallet_entries (
+            wallet_id, direction, entry_type, amount, balance_after, idempotency_key, description
+        ) VALUES (
+            v_wallet_id, 'credit', 'adjustment', 50000, 50000, 'seed-wallet-init-jeaneudes', 'Crédit initial compte dev'
+        );
+        UPDATE public.wallets SET balance = 50000 WHERE id = v_wallet_id;
+    END IF;
+END $$;
 
 -- ------------------------------------------------------------------------------
 -- 4. TRAJETS (TRIPS) DIVERSIFIÉS RECOUVRANT TOUS LES CAS DU LIFECYCLE AUDITÉ
@@ -328,13 +392,14 @@ INSERT INTO public.bookings (
 
 INSERT INTO public.payments (
     id, booking_id, customer_id, amount, currency, provider,
-    provider_reference, status, paid_at
+    provider_reference, status, paid_at, raw_provider_response
 ) VALUES (
     'cccccccc-cccc-cccc-cccc-ccccccccccc3',
     'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3',
     '88888888-8888-8888-8888-888888888881',
     5000, 'XOF', 'wallet',
-    'PAY-TEST-UPCOMING-001', 'success', NOW() - INTERVAL '1 hour'
+    'PAY-TEST-UPCOMING-001', 'success', NOW() - INTERVAL '1 hour',
+    '{"wallet_entry_id": "11111111-aaaa-aaaa-aaaa-aaaaaaaaaaa2"}'::jsonb
 );
 
 -- 5.4. Réservation 4 : PRÊTE POUR SCAN / EMBARQUEMENT (Départ imminent sur Trip 2)
@@ -356,13 +421,14 @@ INSERT INTO public.bookings (
 
 INSERT INTO public.payments (
     id, booking_id, customer_id, amount, currency, provider,
-    provider_reference, status, paid_at
+    provider_reference, status, paid_at, raw_provider_response
 ) VALUES (
     'cccccccc-cccc-cccc-cccc-ccccccccccc4',
     'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4',
     '88888888-8888-8888-8888-888888888881',
     1000, 'XOF', 'wallet',
-    'PAY-TEST-BOARDING-001', 'success', NOW() - INTERVAL '20 minutes'
+    'PAY-TEST-BOARDING-001', 'success', NOW() - INTERVAL '20 minutes',
+    '{"wallet_entry_id": "11111111-aaaa-aaaa-aaaa-aaaaaaaaaaa3"}'::jsonb
 );
 
 -- 5.5. Réservation 5 : DÉJÀ CONSOMMÉE (Boarded - Test double scan)
@@ -384,13 +450,14 @@ INSERT INTO public.bookings (
 
 INSERT INTO public.payments (
     id, booking_id, customer_id, amount, currency, provider,
-    provider_reference, status, paid_at
+    provider_reference, status, paid_at, raw_provider_response
 ) VALUES (
     'cccccccc-cccc-cccc-cccc-ccccccccccc5',
     'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb5',
     '88888888-8888-8888-8888-888888888881',
     1000, 'XOF', 'wallet',
-    'PAY-TEST-BOARDED-001', 'success', NOW() - INTERVAL '15 minutes'
+    'PAY-TEST-BOARDED-001', 'success', NOW() - INTERVAL '15 minutes',
+    '{"wallet_entry_id": "11111111-aaaa-aaaa-aaaa-aaaaaaaaaaa4"}'::jsonb
 );
 
 -- 5.6. Réservation 6 : HISTORIQUE TERMINÉ (Completed)
@@ -436,6 +503,34 @@ INSERT INTO public.bookings (
     'JELANI-TEST-CANCELLED',
     NULL,
     'Réservation de test - Annulée et remboursée'
+);
+
+-- 5.8. Réservation Groupe sur Trip 4 : Saturation complète (14 places réservées -> 0 disponible)
+INSERT INTO public.bookings (
+    id, trip_id, customer_id, pickup_stop_id, dropoff_stop_id, seats_reserved,
+    unit_price, total_price, payment_status, booking_status, booking_channel,
+    external_reference, expires_at, notes
+) VALUES (
+    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb8',
+    '77777777-7777-7777-7777-777777777704', -- Trip 4 complet
+    '88888888-8888-8888-8888-888888888882', -- Marie Amani
+    '55555555-5555-5555-5555-555555555554',
+    '55555555-5555-5555-5555-555555555556',
+    14, 1000, 14000, 'paid', 'confirmed', 'app',
+    'JELANI-TEST-TRIP4-FULL',
+    NULL,
+    'Réservation groupe saturant le Trip 4 (test trajet complet)'
+);
+
+INSERT INTO public.payments (
+    id, booking_id, customer_id, amount, currency, provider,
+    provider_reference, status, paid_at
+) VALUES (
+    'cccccccc-cccc-cccc-cccc-ccccccccccc8',
+    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb8',
+    '88888888-8888-8888-8888-888888888882',
+    14000, 'XOF', 'paystack',
+    'PAY-TEST-FULL-001', 'success', CURRENT_DATE
 );
 
 -- ------------------------------------------------------------------------------

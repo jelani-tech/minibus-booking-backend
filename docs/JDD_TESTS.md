@@ -56,8 +56,13 @@ Tous les comptes ont été créés avec le même mot de passe universel pour sim
 * **Identité** : Jean Kouassi
 * **Téléphone (Login)** : `+2250101010101`
 * **Email** : `jean.kouassi@jelani.test`
-* **Solde Wallet initial** : **50 000 FCFA** (alimenté via écriture `adjustment` dans `wallet_entries`)
-* **Usage** : C'est le compte principal de démonstration. En vous connectant avec ce numéro sur l'application mobile, vous disposez immédiatement des 7 états de réservation possibles dans l'onglet **"Mes Réservations"** et pouvez tester le paiement instantané par portefeuille.
+* **Solde Wallet effectif** : **50 000 FCFA**
+* **Grand Livre comptable (`wallet_entries`)** :
+  1. `1111...aaa1` : **Crédit initial** de **+57 000 FCFA** (type `adjustment`, solde = 57 000 FCFA)
+  2. `1111...aaa2` : **Débit paiement** de **-5 000 FCFA** pour réservation `JELANI-TEST-UPCOMING` (solde = 52 000 FCFA)
+  3. `1111...aaa3` : **Débit paiement** de **-1 000 FCFA** pour réservation `JELANI-TEST-BOARDING` (solde = 51 000 FCFA)
+  4. `1111...aaa4` : **Débit paiement** de **-1 000 FCFA** pour réservation `JELANI-TEST-BOARDED` (solde = 50 000 FCFA)
+* **Usage** : Compte principal de recette. En vous connectant avec ce numéro sur l'application mobile, vous disposez immédiatement du solde actif de 50 000 FCFA et des 7 états de réservation possibles dans l'onglet **"Mes Réservations"**.
 
 ### 3.2. Profil Client Sans Solde (Test Paiements Externes)
 * **Customer ID** : `88888888-8888-8888-8888-888888888882`
@@ -66,7 +71,7 @@ Tous les comptes ont été créés avec le même mot de passe universel pour sim
 * **Téléphone (Login)** : `+2250202020202`
 * **Email** : `marie.amani@jelani.test`
 * **Solde Wallet initial** : **0 FCFA**
-* **Usage** : Test des flux de rechargement de wallet ou d'initiation de paiement externe Mobile Money (Jèko / Wave / MTN / Orange) en cas de solde insuffisant.
+* **Usage** : Test des flux de rechargement de wallet ou d'initiation de paiement externe Mobile Money (Jèko / Wave / MTN / Orange / Paystack) en cas de solde insuffisant.
 
 ### 3.3. Profil Opérateur / Contrôleur de Gare (Validation des Billets)
 * **Customer ID** : `88888888-8888-8888-8888-888888888883`
@@ -74,8 +79,18 @@ Tous les comptes ont été créés avec le même mot de passe universel pour sim
 * **Identité** : Seydou Contrôleur
 * **Téléphone (Login)** : `+2250303030303`
 * **Email** : `seydou.controleur@jelani.test`
-* **Provisionnement Serveur** : ID à déclarer dans la variable d'environnement `TICKET_SCANNER_CUSTOMER_IDS`
+* **Habilitation Scanner** : Inclus automatiquement par défaut dans `TICKET_SCANNER_CUSTOMER_IDS` en environnement de développement
 * **Usage** : Utilisateur habilité à exécuter `POST /api/bookings/ticket/<ref>/consume` pour valider l'embarquement physique d'un passager.
+
+### 3.4. Comptes Additionnels de Développement & Test
+* **Jean-Eudes KACOU** (Login : `1234567890`, Mot de passe : `Password123!`)
+  - **Customer ID** : `bd2c956c-f11a-4730-9547-3e9a3716a8e9`
+  - **Solde Wallet** : **50 000 FCFA**
+  - **Usage** : Profil de développement interactif avec numéro court.
+* **Jean Client** (Login : `+2250100000003`, Mot de passe : `Password123!`)
+  - **Customer ID** : `88888888-8888-8888-8888-888888888888`
+  - **Solde Wallet** : **10 000 FCFA**
+  - **Usage** : Compte de test automatisé utilisé par la suite de tests d'intégration backend.
 
 ---
 
@@ -198,12 +213,20 @@ Pour réinitialiser la base locale à cet état propre à tout moment :
 ```
 
 ### Vérifier l'état en direct
-Pour lancer la vérification automatique des endpoints sans interface :
+Pour lancer la suite de contrôles automatiques (authentification, solde wallet, grand livre, droits de scan, trajets complets) :
 ```bash
-docker exec minibus_local_backend python scripts/verify_test_dataset.py
+python scripts/verify_test_dataset.py
 ```
-Ce script contrôle automatiquement :
-1. La connexion avec le compte Jean Kouassi.
-2. La conformité des 7 réservations retournées.
-3. La consultation publique de métadonnées du billet.
-4. Le filtrage des trajets en recherche.
+Ce script vérifie avec assertions strictes :
+1. Connexion réussie pour Jean Kouassi (`+2250101010101`).
+2. Solde effectif du Wallet à **50 000 FCFA** via `/api/wallet`.
+3. Cohérence du relevé `/api/wallet/transactions` (4 écritures comptables).
+4. Conformité des 7 réservations retournées (flags `can_pay`, `can_show_ticket`).
+5. Consultation publique du billet `JELANI-TEST-UPCOMING`.
+6. Compte Marie Amani (`+2250202020202`) avec solde 0 FCFA pour tester Mobile Money.
+7. Compte Jean-Eudes KACOU (`1234567890`) avec solde 50 000 FCFA.
+8. Contrôle d'accès et scan de billets :
+   - Rejet 403 d'un client normal tentant de valider un billet.
+   - Validation 200 par Seydou Contrôleur (`+2250303030303`) -> passage à `boarded`.
+   - Protection 409 `TICKET_ALREADY_USED` contre le double scan.
+9. Filtrage de la recherche de trajets (exclusion des passés, annulés et saturés).

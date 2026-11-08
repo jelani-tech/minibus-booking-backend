@@ -25,7 +25,10 @@ class Config:
     LEGACY_SCHEMA_BOOTSTRAP = os.environ.get('LEGACY_SCHEMA_BOOTSTRAP', 'false').lower() == 'true'
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
     TICKET_SCANNER_CUSTOMER_IDS = tuple(
-        value.strip() for value in os.environ.get('TICKET_SCANNER_CUSTOMER_IDS', '').split(',') if value.strip()
+        value.strip() for value in os.environ.get(
+            'TICKET_SCANNER_CUSTOMER_IDS',
+            '88888888-8888-8888-8888-888888888883' if os.environ.get('APP_ENV', 'development') == 'development' else ''
+        ).split(',') if value.strip()
     )
     JWT_ACCESS_TOKEN_EXPIRES = 86400  # 24 hours
     
@@ -89,7 +92,15 @@ class Config:
     #   3. + WALLET_TOPUP_ENABLED=true                -> rechargement
     #   4. + WALLET_PAYMENT_ENABLED=true              -> paiement depuis le solde
     #   5. + WALLET_REFUND_TO_WALLET=true             -> remboursements en wallet
-    WALLET_ENABLED = os.environ.get('WALLET_ENABLED', 'false').lower() == 'true'
+    # En dev, activé par défaut pour les tests et la recette locale.
+    # En prod, piloté explicitement par variable d'environnement (false par défaut).
+    WALLET_ENABLED = (
+        os.environ.get(
+            'WALLET_ENABLED',
+            'true' if os.environ.get('APP_ENV', 'development') == 'development' else 'false',
+        ).lower()
+        == 'true'
+    )
     WALLET_TOPUP_ENABLED = os.environ.get('WALLET_TOPUP_ENABLED', 'true').lower() == 'true'
     WALLET_PAYMENT_ENABLED = os.environ.get('WALLET_PAYMENT_ENABLED', 'true').lower() == 'true'
     # Bascule des remboursements d'annulation vers le wallet. À false, le
