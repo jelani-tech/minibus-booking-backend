@@ -18,3 +18,4 @@ ENV/
 /.idea
 /scripts
 .vscode/launch.json
+.env.prod

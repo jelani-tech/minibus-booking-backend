@@ -120,11 +120,12 @@ def settle_payment_from_provider(reference, provider_data, source):
             )
             return current_status
 
-    _, booking_updated = payment_repository.settle_by_reference(
+    settled, booking_updated = payment_repository.settle_by_reference(
         provider_reference=reference,
         payment_status=target_status,
         raw_provider_response=provider_data,
     )
+    target_status = settled["status"] if settled else target_status
     db.session.commit()
     if not booking_updated and target_status == PAYMENT_STATUS_SUCCESS:
         logger.error(
@@ -462,6 +463,8 @@ def _pay_booking_from_wallet(booking, customer_id):
         raw_provider_response=payment.get('raw_provider_response'),
     )
     payment = settled or payment
+    if not booking_updated:
+        raise ValueError("BOOKING_EXPIRED")
     db.session.commit()
 
     logger.info(
@@ -486,6 +489,7 @@ def initiate_payment():
             logger.warning(f"Payment initiation rejected: booking_id missing (customer_id={customer_id})")
             return jsonify({'error': 'booking_id is required'}), 400
 
+        booking_repository.lock(booking_id)
         booking = booking_repository.get(booking_id)
         if not booking:
             logger.warning(f"Payment initiation rejected: booking not found ({log_context})")
@@ -495,6 +499,12 @@ def initiate_payment():
                 f"Payment initiation denied: customer_id={customer_id} does not own booking_id={booking_id}"
             )
             return jsonify({'error': 'Unauthorized'}), 403
+        from services.booking_lifecycle import payable
+        booking_repository.expire_pending(trip_id=booking['trip_id'])
+        booking = booking_repository.get(booking_id)
+        if booking['booking_status'] in ('pending', 'expired') and not payable(booking):
+            db.session.commit()
+            return jsonify({'error': 'Booking expired or sales closed', 'code': 'BOOKING_EXPIRED'}), 409
         if booking['booking_status'] != 'pending':
             logger.warning(
                 f"Payment initiation rejected: booking_id={booking_id} status is "
@@ -506,6 +516,17 @@ def initiate_payment():
         if existing_payment and existing_payment['status'] in SETTLED_SUCCESS_STATUSES:
             logger.warning(f"Payment initiation rejected: payment already completed ({log_context})")
             return jsonify({'error': 'Payment already completed'}), 400
+
+        if existing_payment and existing_payment['status'] == 'pending':
+            # Reuse an in-flight checkout. Never replace its reference or start
+            # a wallet debit while a provider may still collect the same fare.
+            if (data.get('payment_method') or '').lower() == WALLET_PAYMENT_METHOD:
+                return jsonify({'error': 'A payment is already pending', 'code': 'PAYMENT_PENDING'}), 409
+            db.session.commit()
+            return jsonify({'message': 'Payment already initiated',
+                            'payment': payment_row_to_api(existing_payment),
+                            'payment_url': existing_payment.get('provider_payment_url'),
+                            'transaction_id': existing_payment.get('provider_reference')}), 200
 
         # Paiement depuis le solde : court-circuite le provider et regle tout de
         # maniere synchrone, AVANT les branches JEKO/Paystack (donc sans
@@ -593,6 +614,11 @@ def initiate_payment():
             'transaction_id': payment.get('provider_reference')
         }), 200
 
+    except ValueError as e:
+        db.session.rollback()
+        if str(e) == 'BOOKING_EXPIRED':
+            return jsonify({'error': 'Booking expired', 'code': 'BOOKING_EXPIRED'}), 409
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         logger.error(f"Payment failed : {log_context} , error: {str(e)}")
         db.session.rollback()
@@ -730,7 +756,7 @@ CALLBACK_HTML = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<title>JELANI - Paiement</title>{redirect}</head>'
     '<body style="font-family: sans-serif; text-align: center; padding: 48px 16px;">'
-    '<p>Votre r&eacute;servation est valid&eacute;e, vous pouvez fermer cette fen&ecirc;tre.</p>'
+    '<p>Paiement en cours de v&eacute;rification. Revenez dans JELANI pour consulter son statut.</p>'
     '</body></html>'
 )
 

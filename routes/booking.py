@@ -33,6 +33,10 @@ def create_booking():
                 )
                 return jsonify({'error': f'{field} is required'}), 400
 
+        seats = data['number_of_seats']
+        if isinstance(seats, bool) or not isinstance(seats, int) or seats < 1:
+            return jsonify({'error': 'number_of_seats must be a positive integer'}), 400
+
         logger.info(
             f"Creating booking: customer_id={customer_id}, trip_id={data['trip_id']}, "
             f"seats={data['number_of_seats']}"
@@ -41,7 +45,7 @@ def create_booking():
         booking = booking_repository.create(
             customer_id=customer_id,
             trip_id=data['trip_id'],
-            seats_reserved=int(data['number_of_seats']),
+            seats_reserved=seats,
             pickup_stop_id=data['pickup_stop_id'],
             dropoff_stop_id=data['dropoff_stop_id'],
         )
@@ -73,6 +77,7 @@ def get_user_bookings():
     customer_id = get_jwt_identity()
     try:
         bookings = booking_repository.list_for_customer(customer_id)
+        db.session.commit()
 
         logger.info(f"Listed {len(bookings)} booking(s) for customer_id={customer_id}")
 
@@ -94,7 +99,12 @@ def get_booking_by_ticket_reference(ticket_reference):
             logger.warning(f"Ticket lookup failed: reference '{ticket_reference}' not found")
             return jsonify({'error': 'Ticket not found'}), 404
 
-        return jsonify({'booking': booking_row_to_api(booking)}), 200
+        # Public lookup is verification metadata, never a passenger directory.
+        result = booking_row_to_api(booking)
+        return jsonify({'ticket': {
+            key: result[key] for key in ('ticket_reference', 'trip_id', 'number_of_seats',
+                                        'journey_status', 'ticket_status')
+        }}), 200
 
     except Exception as e:
         logger.exception(f"Error fetching booking by ticket reference '{ticket_reference}': {e}")
@@ -119,6 +129,9 @@ def get_booking(booking_id):
             )
             return jsonify({'error': 'Unauthorized'}), 403
 
+        booking_repository.expire_pending(trip_id=booking['trip_id'])
+        db.session.commit()
+        booking = booking_repository.get(booking_id)
         return jsonify({'booking': booking_row_to_api(booking)}), 200
 
     except Exception as e:
@@ -168,3 +181,27 @@ def cancel_booking(booking_id):
         db.session.rollback()
         logger.exception(f"Error cancelling booking_id={booking_id} (customer_id={customer_id}): {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@booking_bp.route('/ticket/<ticket_reference>/consume', methods=['POST'])
+@jwt_required()
+def consume_ticket(ticket_reference):
+    # Explicit server-managed operator allowlist. Ordinary customer tokens
+    # cannot scan; this remains disabled until operators are provisioned.
+    scanner = str(get_jwt_identity())
+    if scanner not in current_app.config.get('TICKET_SCANNER_CUSTOMER_IDS', ()):
+        return jsonify({'error': 'Unauthorized'}), 403
+    data = request.get_json(silent=True) or {}
+    if not data.get('trip_id'):
+        return jsonify({'error': 'trip_id is required'}), 400
+    try:
+        booking = booking_repository.consume_ticket(ticket_reference, data['trip_id'])
+        db.session.commit()
+        return jsonify({'booking': booking_row_to_api(booking)}), 200
+    except ValueError as error:
+        db.session.rollback()
+        return jsonify({'error': str(error), 'code': str(error)}), 409
+    except Exception:
+        db.session.rollback()
+        logger.exception('Ticket consumption failed')
+        return jsonify({'error': 'Ticket validation failed'}), 500

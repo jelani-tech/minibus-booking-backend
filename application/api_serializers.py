@@ -75,6 +75,7 @@ def trip_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
         "departure_time": json_value(planned_start),
         "arrival_time": json_value(planned_end or planned_start),
         "trip_date": json_value(row.get("trip_date")),
+        "booking_close_at": json_value(row.get("booking_close_at")),
         "price": json_value(price),
         "base_price": json_value(row.get("base_price")),
         "available_seats": row.get("capacity_available"),
@@ -159,13 +160,14 @@ def booking_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
         "email": row.get("customer_email"),
     }
 
+    from services.booking_lifecycle import lifecycle
+    actions = lifecycle(row)
     ticket_reference = row.get("external_reference") or str(row["booking_id"])
     qr_payload = {
         "type": "jelani_booking",
         "booking_id": str(row["booking_id"]),
         "reference": ticket_reference,
         "trip_id": str(row.get("trip_id") or row.get("id")),
-        "customer_id": str(row["customer_id"]),
     }
 
     return {
@@ -183,7 +185,8 @@ def booking_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
         "booking_channel": row.get("booking_channel"),
         "external_reference": row.get("external_reference"),
         "ticket_reference": ticket_reference,
-        "qr_payload": qr_payload,
+        **actions,
+        "qr_payload": qr_payload if actions["can_show_ticket"] else None,
         "passenger_name": row.get("customer_full_name"),
         "passenger_phone": row.get("customer_phone"),
         "pickup_stop_id": row.get("pickup_stop_id"),

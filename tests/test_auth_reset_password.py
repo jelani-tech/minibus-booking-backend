@@ -33,6 +33,18 @@ class AuthResetPasswordTest(BackendApiTestCase):
                         {"id": customer["id"]}
                     )
                     db.session.execute(
+                        db.text("delete from public.wallet_entries where wallet_id in (select id from public.wallets where customer_id = :id)"),
+                        {"id": customer["id"]}
+                    )
+                    db.session.execute(
+                        db.text("delete from public.wallet_topups where customer_id = :id"),
+                        {"id": customer["id"]}
+                    )
+                    db.session.execute(
+                        db.text("delete from public.wallets where customer_id = :id"),
+                        {"id": customer["id"]}
+                    )
+                    db.session.execute(
                         db.text("delete from public.customers where id = :id"),
                         {"id": customer["id"]}
                     )

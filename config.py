@@ -28,6 +28,13 @@ class Config:
     AUTO_UPGRADE_DB = os.environ.get('AUTO_UPGRADE_DB', 'false').lower() == 'true'
     LEGACY_SCHEMA_BOOTSTRAP = os.environ.get('LEGACY_SCHEMA_BOOTSTRAP', 'false').lower() == 'true'
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
+    TICKET_SCANNER_CUSTOMER_IDS = tuple(
+        value.strip() for value in os.environ.get(
+            'TICKET_SCANNER_CUSTOMER_IDS',
+            '88888888-8888-8888-8888-888888888883' if os.environ.get('APP_ENV', 'development') == 'development' else ''
+        ).split(',') if value.strip()
+    )
+    JWT_ACCESS_TOKEN_EXPIRES = 86400  # 24 hours
 
     # ── Authentification ─────────────────────────────────────────────────────
     # Access token court + refresh token à usage unique, pour toutes les
@@ -77,6 +84,12 @@ class Config:
         os.environ.get('BOOKING_CANCELLATION_CUTOFF_MINUTES') or 60
     )
 
+    # Délai limite avant le départ pour réserver ou payer un trajet (en minutes).
+    # 0 = jusqu'à l'heure exacte de départ.
+    BOOKING_DEPARTURE_CUTOFF_MINUTES = int(
+        os.environ.get('BOOKING_DEPARTURE_CUTOFF_MINUTES') or 0
+    )
+
     # Deep link mobile (ex: jelani://payment-callback) vers lequel la page
     # /api/payments/callback rebondit a la fin du checkout, pour ramener dans
     # l'app. Il n'est jamais transmis au provider : JEKO n'accepte que des URLs
@@ -94,7 +107,15 @@ class Config:
     #   3. + WALLET_TOPUP_ENABLED=true                -> rechargement
     #   4. + WALLET_PAYMENT_ENABLED=true              -> paiement depuis le solde
     #   5. + WALLET_REFUND_TO_WALLET=true             -> remboursements en wallet
-    WALLET_ENABLED = os.environ.get('WALLET_ENABLED', 'false').lower() == 'true'
+    # En dev, activé par défaut pour les tests et la recette locale.
+    # En prod, piloté explicitement par variable d'environnement (false par défaut).
+    WALLET_ENABLED = (
+        os.environ.get(
+            'WALLET_ENABLED',
+            'true' if os.environ.get('APP_ENV', 'development') == 'development' else 'false',
+        ).lower()
+        == 'true'
+    )
     WALLET_TOPUP_ENABLED = os.environ.get('WALLET_TOPUP_ENABLED', 'true').lower() == 'true'
     WALLET_PAYMENT_ENABLED = os.environ.get('WALLET_PAYMENT_ENABLED', 'true').lower() == 'true'
     # Bascule des remboursements d'annulation vers le wallet. À false, le

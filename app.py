@@ -137,6 +137,21 @@ def create_app():
     _require_secrets(app)
     _require_payment_provider_config(app)
 
+    # Per-request SQL timings, installed once on this app's engine.
+    from sqlalchemy import event
+    from flask import g, has_request_context
+    from time import perf_counter
+    with app.app_context():
+        @event.listens_for(db.engine, 'before_cursor_execute')
+        def sql_started(conn, cursor, statement, parameters, context, executemany):
+            context.audit_started = perf_counter()
+
+        @event.listens_for(db.engine, 'after_cursor_execute')
+        def sql_finished(conn, cursor, statement, parameters, context, executemany):
+            if has_request_context():
+                g.sql_ms = getattr(g, 'sql_ms', 0) + (perf_counter() - context.audit_started) * 1000
+                g.sql_count = getattr(g, 'sql_count', 0) + 1
+
     # Multi-schema project (public/clients/partners):
     # include_schemas=True is required so Alembic autogenerate can resolve
     # cross-schema foreign keys (e.g. public.steps -> partners.partners).
@@ -172,14 +187,44 @@ def create_app():
 
     @app.route('/health', methods=['GET'])
     def health():
-        return {'status': 'healthy'}, 200
+        from sqlalchemy import text
+        try:
+            db.session.execute(text("SELECT 1"))
+            return {'status': 'healthy', 'database': 'connected'}, 200
+        except Exception as exc:
+            logger.error(f"Healthcheck database error: {exc}")
+            return {'status': 'unhealthy', 'database': 'disconnected', 'error': 'Database unavailable'}, 503
 
+
+    @app.before_request
+    def start_request_timer():
+        from flask import g
+        from time import perf_counter
+        g.request_started = perf_counter()
+
+    @app.cli.command("expire-bookings")
+    def expire_bookings():
+        """Release expired holds; schedule every minute on the server."""
+        from infrastructure.supabase_write_repositories import SupabaseBookingRepository
+        count = SupabaseBookingRepository().expire_pending()
+        db.session.commit()
+        click.echo(f"Expired {count} booking(s)")
 
     @app.after_request
     def log_request(response):
-        from flask import request
+        from flask import request, g
+        from time import perf_counter
+        duration = (perf_counter() - g.request_started) * 1000
+        sql_ms = getattr(g, "sql_ms", 0)
+        sql_count = getattr(g, "sql_count", 0)
+        response.headers["Server-Timing"] = f"app;dur={duration:.1f}, sql;dur={sql_ms:.1f}"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
         logger.info(
-            f"{request.method} {request.path} -> {response.status_code}"
+            f"{request.method} {request.path} -> {response.status_code} duration_ms={duration:.1f} sql_ms={sql_ms:.1f} sql_count={sql_count}"
         )
         return response
 
@@ -205,7 +250,7 @@ def create_app():
             docker exec minibus_local_backend flask seed-lines --file /app/other.xlsx
         """
         if current_app.config.get("APP_ENV") != "development":
-            click.echo("❌ Cette commande n'est disponible qu'en environnement 'development'.", err=True)
+            click.echo("[ERROR] Cette commande n'est disponible qu'en environnement 'development'.", err=True)
             raise SystemExit(1)
         from services.import_lines import import_lines_from_excel
         import_lines_from_excel(file_path=file)
@@ -250,9 +295,9 @@ def create_app():
             click.echo(f"{expired} rechargement(s) expiré(s)")
 
         if divergences:
-            click.echo(f"❌ {len(divergences)} wallet(s) en écart", err=True)
+            click.echo(f"[ERROR] {len(divergences)} wallet(s) en écart", err=True)
             raise SystemExit(1)
-        click.echo("✅ Aucun écart entre les soldes et le registre")
+        click.echo("[OK] Aucun écart entre les soldes et le registre")
 
     return app
 
