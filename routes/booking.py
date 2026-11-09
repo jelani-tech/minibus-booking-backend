@@ -184,7 +184,7 @@ def cancel_booking(booking_id):
 
 
 @booking_bp.route('/ticket/<ticket_reference>/consume', methods=['POST'])
-@jwt_required()
+@customer_required
 def consume_ticket(ticket_reference):
     # Explicit server-managed operator allowlist. Ordinary customer tokens
     # cannot scan; this remains disabled until operators are provisioned.
