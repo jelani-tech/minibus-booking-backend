@@ -10,7 +10,7 @@ create schema if not exists auth;
 create table auth.users (
     id               uuid primary key default gen_random_uuid(),
     phone            text unique not null,
-    encrypted_password text not null,
+    encrypted_password text,
     created_at       timestamptz not null default timezone('utc', now()),
     updated_at       timestamptz not null default timezone('utc', now())
 );
@@ -28,6 +28,58 @@ create table auth.password_resets (
 create index password_resets_phone_idx on auth.password_resets (phone);
 create index password_resets_email_idx on auth.password_resets (lower(email));
 create index password_resets_expires_at_idx on auth.password_resets (expires_at);
+
+-- ============================================================
+-- Schema APP_AUTH : sessions multi-applications, PIN chauffeur
+-- et journal des connexions
+-- ============================================================
+create schema if not exists app_auth;
+
+create table if not exists app_auth.refresh_tokens (
+    id             uuid primary key default gen_random_uuid(),
+    session_id     uuid not null,
+    user_id        uuid not null references auth.users(id) on delete cascade,
+    audience       text not null,
+    token_hash     text not null unique,
+    device_id      text,
+    expires_at     timestamptz not null,
+    revoked_at     timestamptz,
+    revoked_reason text,
+    created_at     timestamptz not null default timezone('utc', now())
+);
+
+create index if not exists refresh_tokens_session_idx on app_auth.refresh_tokens (session_id);
+create index if not exists refresh_tokens_user_idx on app_auth.refresh_tokens (user_id);
+create index if not exists refresh_tokens_hash_idx on app_auth.refresh_tokens (token_hash);
+
+create table if not exists app_auth.user_pins (
+    user_id              uuid primary key references auth.users(id) on delete cascade,
+    pin_hash             text not null,
+    must_change_pin      boolean not null default true,
+    failed_attempts      integer not null default 0,
+    device_id            text,
+    device_registered_at timestamptz,
+    locked_at            timestamptz,
+    pin_changed_at       timestamptz,
+    created_at           timestamptz not null default timezone('utc', now()),
+    updated_at           timestamptz not null default timezone('utc', now())
+);
+
+create table if not exists app_auth.login_attempts (
+    id             uuid primary key default gen_random_uuid(),
+    user_id        uuid references auth.users(id) on delete cascade,
+    audience       text not null,
+    phone          text not null,
+    device_id      text,
+    ip_address     text,
+    user_agent     text,
+    success        boolean not null,
+    failure_reason text,
+    created_at     timestamptz not null default timezone('utc', now())
+);
+
+create index if not exists login_attempts_phone_idx on app_auth.login_attempts (phone);
+create index if not exists login_attempts_created_idx on app_auth.login_attempts (created_at desc);
 
 create type partner_status as enum ('pending', 'active', 'inactive');
 create type vehicle_energy_type as enum ('diesel', 'essence', 'electric', 'hybrid');
@@ -82,6 +134,7 @@ create unique index vehicles_vehicle_code_unique_idx on vehicles (lower(vehicle_
 
 create table drivers (
     id uuid primary key default gen_random_uuid(),
+    auth_user_id uuid references auth.users(id),
     partner_id uuid not null references partners(id),
     first_name text not null,
     last_name text,
@@ -95,6 +148,7 @@ create table drivers (
 );
 
 create index drivers_partner_id_idx on drivers (partner_id);
+create unique index drivers_auth_user_id_unique_idx on drivers (auth_user_id);
 create index drivers_phone_idx on drivers (phone);
 create index drivers_status_idx on drivers (status);
 
@@ -568,6 +622,9 @@ alter table payments enable row level security;
 alter table wallets enable row level security;
 alter table wallet_entries enable row level security;
 alter table wallet_topups enable row level security;
+alter table app_auth.refresh_tokens enable row level security;
+alter table app_auth.user_pins enable row level security;
+alter table app_auth.login_attempts enable row level security;
 
 create policy "Allow public read active lines" on lines for select using (status = 'active');
 create policy "Allow public read active stops" on stops for select using (status = 'active');
