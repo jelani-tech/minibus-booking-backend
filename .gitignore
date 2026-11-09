@@ -16,6 +16,6 @@ ENV/
 .DS_Store
 *.log
 /.idea
-
+/scripts
 .vscode/launch.json
 .env.prod

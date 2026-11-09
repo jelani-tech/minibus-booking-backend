@@ -1,5 +1,9 @@
 import os
+from datetime import timedelta
+
 from dotenv import load_dotenv
+
+from services.auth.audiences import ALL_AUDIENCES
 
 env_file = os.environ.get('ENV_FILE')
 if env_file:
@@ -31,6 +35,17 @@ class Config:
         ).split(',') if value.strip()
     )
     JWT_ACCESS_TOKEN_EXPIRES = 86400  # 24 hours
+
+    # ── Authentification ─────────────────────────────────────────────────────
+    # Access token court + refresh token à usage unique, pour toutes les
+    # applications. Un jeton sans claim `aud` (ancien format) est refusé.
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(
+        minutes=int(os.environ.get('JWT_ACCESS_TOKEN_MINUTES') or 15)
+    )
+    JWT_REFRESH_TOKEN_DAYS = int(os.environ.get('JWT_REFRESH_TOKEN_DAYS') or 30)
+    JWT_DECODE_AUDIENCE = list(ALL_AUDIENCES)
+    # PIN chauffeur : verrouillage du compte après N échecs consécutifs.
+    DRIVER_PIN_MAX_ATTEMPTS = int(os.environ.get('DRIVER_PIN_MAX_ATTEMPTS') or 5)
     
     # Payment service API keys
     WAVE_API_KEY = os.environ.get('WAVE_API_KEY') or ''

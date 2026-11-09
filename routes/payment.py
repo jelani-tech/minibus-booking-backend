@@ -9,7 +9,7 @@ from html import escape
 from urllib.parse import urlencode
 
 from flask import Blueprint, current_app, jsonify, request
-from flask_jwt_extended import get_jwt_identity, jwt_required
+from flask_jwt_extended import get_jwt_identity
 
 from application.api_serializers import payment_row_to_api
 from infrastructure.supabase_write_repositories import (
@@ -23,6 +23,7 @@ from infrastructure.supabase_write_repositories import (
     WalletFrozenError,
 )
 from models.public import db
+from routes.guards import customer_required
 from services.jeko_service import (
     JEKO_PAYMENT_METHODS,
     JekoService,
@@ -475,7 +476,7 @@ def _pay_booking_from_wallet(booking, customer_id):
 
 
 @payment_bp.route('/initiate', methods=['POST'])
-@jwt_required()
+@customer_required
 def initiate_payment():
     data = request.get_json() or {}
     customer_id = get_jwt_identity()
@@ -861,7 +862,7 @@ def payment_callback():
 
 
 @payment_bp.route('/status/<uuid:booking_id>', methods=['GET'])
-@jwt_required()
+@customer_required
 def get_payment_status(booking_id):
     customer_id = get_jwt_identity()
     try:

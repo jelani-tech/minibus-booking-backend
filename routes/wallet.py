@@ -1,6 +1,6 @@
 """Routes du porte-monnaie client (§ 6 de la spec wallet).
 
-Toutes les routes sont sous @jwt_required() et opèrent exclusivement sur le
+Toutes les routes sont sous @customer_required et opèrent exclusivement sur le
 wallet de get_jwt_identity() : aucun wallet_id, customer_id ou balance n'est
 jamais accepté depuis le corps de requête.
 
@@ -14,7 +14,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from flask import Blueprint, current_app, jsonify, request
-from flask_jwt_extended import get_jwt_identity, jwt_required
+from flask_jwt_extended import get_jwt_identity
 from loguru import logger
 
 from application.api_serializers import (
@@ -29,6 +29,7 @@ from infrastructure.supabase_write_repositories import (
     WalletFrozenError,
 )
 from models.public import db
+from routes.guards import customer_required
 from routes.payment import PLACEHOLDER_PAYMENT_EMAIL, build_fallback_payment_email
 from services.jeko_service import JEKO_PAYMENT_METHODS, JekoService
 from services.paystack_service import PaystackService
@@ -121,7 +122,7 @@ def parse_limit(raw, default, maximum):
 # ---------------------------------------------------------------------------
 
 @wallet_bp.route('', methods=['GET'])
-@jwt_required()
+@customer_required
 def get_wallet():
     customer_id = get_jwt_identity()
     try:
@@ -139,7 +140,7 @@ def get_wallet():
 # ---------------------------------------------------------------------------
 
 @wallet_bp.route('/transactions', methods=['GET'])
-@jwt_required()
+@customer_required
 def list_transactions():
     customer_id = get_jwt_identity()
     limit = parse_limit(
@@ -241,7 +242,7 @@ def initiate_topup_checkout(topup, provider, payment_method, customer_id):
 
 
 @wallet_bp.route('/topups', methods=['POST'])
-@jwt_required()
+@customer_required
 def create_topup():
     if not current_app.config.get('WALLET_TOPUP_ENABLED'):
         return error_response('WALLET_TOPUP_DISABLED', 'Wallet top-up is not available', 404)
@@ -425,7 +426,7 @@ def create_topup():
 # ---------------------------------------------------------------------------
 
 @wallet_bp.route('/topups', methods=['GET'])
-@jwt_required()
+@customer_required
 def list_topups():
     customer_id = get_jwt_identity()
     limit = parse_limit(request.args.get('limit'), TOPUPS_DEFAULT_LIMIT, TOPUPS_MAX_LIMIT)
@@ -442,7 +443,7 @@ def list_topups():
 # ---------------------------------------------------------------------------
 
 @wallet_bp.route('/topups/<uuid:topup_id>', methods=['GET'])
-@jwt_required()
+@customer_required
 def get_topup(topup_id):
     customer_id = get_jwt_identity()
     try:

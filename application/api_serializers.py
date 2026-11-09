@@ -130,6 +130,25 @@ def customer_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def driver_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    full_name = " ".join(
+        part for part in [row.get("first_name"), row.get("last_name")] if part
+    )
+    return {
+        "id": str(row["id"]),
+        "name": full_name,
+        "first_name": row.get("first_name"),
+        "last_name": row.get("last_name"),
+        "phone": row.get("phone"),
+        "partner_id": json_value(row.get("partner_id")),
+        "license_number": row.get("license_number"),
+        "license_expiry_date": json_value(row.get("license_expiry_date")),
+        "status": row.get("status"),
+        "created_at": json_value(row.get("created_at")),
+        "updated_at": json_value(row.get("updated_at")),
+    }
+
+
 def booking_row_to_api(row: dict[str, Any]) -> dict[str, Any]:
     trip_row = dict(row)
     trip_row["id"] = row.get("id") or row.get("trip_id")
