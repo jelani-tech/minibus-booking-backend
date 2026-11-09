@@ -5,7 +5,7 @@ API backend de l'application JELANI, utilisee par l'application mobile Flutter `
 ## Etat actuel
 
 - API Flask exposee sur `http://localhost:8000`.
-- Authentification JWT pour les clients mobiles.
+- Authentification JWT pour les applications client et chauffeur (access token court + refresh token).
 - Inscription et connexion par numero de telephone.
 - Reinitialisation de mot de passe par OTP e-mail via Brevo.
 - Lecture des lignes, arrets et trajets via repositories alignes sur le schema Supabase.
@@ -105,11 +105,29 @@ minibus-booking-backend/
 
 ### Authentification
 
+Chaque jeton indique son application (`aud` : `customer-app`, `driver-app`,
+`admin-app`) et est refusé sur les routes d'une autre application. L'access
+token dure 15 min, le refresh token 30 jours ; chaque refresh remplace le
+refresh token (usage unique). Schéma : `scripts/driver_auth_schema.sql`.
+
+Client :
+
 - `POST /api/auth/register`
 - `POST /api/auth/login`
+- `POST /api/auth/refresh` avec `refresh_token`
+- `POST /api/auth/logout` avec JWT
 - `GET /api/auth/me` avec JWT
 - `POST /api/auth/reset-password/request`
 - `POST /api/auth/reset-password/reset`
+
+Chauffeur (téléphone + PIN à 6 chiffres, compte lié au premier appareil,
+verrouillé après 5 échecs) :
+
+- `POST /api/driver/auth/login` avec `phone`, `pin`, `device_id`
+- `PUT /api/driver/auth/pin` avec JWT chauffeur, `current_pin`, `new_pin` (seule route permise tant que `must_change_pin` est vrai)
+- `POST /api/driver/auth/refresh` avec `refresh_token`
+- `POST /api/driver/auth/logout` avec JWT chauffeur
+- `GET /api/driver/me` avec JWT chauffeur
 
 ### Lignes
 
@@ -262,3 +280,7 @@ Prevoir en production:
 - configuration Paystack reelle
 - webhook paiement expose en HTTPS
 - logs applicatifs et supervision
+
+## Corrections de l’audit mobile MVP
+
+Voir [le suivi des constats, tests et étapes de déploiement](docs/AUDIT_MVP.md).

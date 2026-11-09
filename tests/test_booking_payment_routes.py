@@ -51,9 +51,18 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
                 db.text(
                     """
                     update public.trips
-                    set capacity_booked = 0,
-                        capacity_available = capacity_total - capacity_blocked,
+                    set booking_close_at = null,
+                        planned_end_datetime = timezone('utc', now()) + interval '2 days',
+                        status = 'scheduled',
                         planned_start_datetime = timezone('utc', now()) + interval '1 day'
+                    where id not in (
+                        '77777777-7777-7777-7777-777777777701',
+                        '77777777-7777-7777-7777-777777777702',
+                        '77777777-7777-7777-7777-777777777703',
+                        '77777777-7777-7777-7777-777777777704',
+                        '77777777-7777-7777-7777-777777777705'
+                    );
+                    select recalculate_trip_capacity(id) from public.trips;
                     """
                 )
             )
@@ -199,7 +208,8 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["booking"]["id"], booking["id"])
+        self.assertEqual(response.get_json()["ticket"]["ticket_reference"], booking["ticket_reference"])
+        self.assertNotIn("customer", response.get_json()["ticket"])
 
     def set_customer_email(self, email):
         from models.public import db
@@ -287,9 +297,9 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         self.assertEqual(first_response.status_code, 200)
         self.assertEqual(second_response.status_code, 200)
         first_email = first_initialize.call_args.kwargs["email"]
-        second_email = second_initialize.call_args.kwargs["email"]
+        second_initialize.assert_not_called()
         self.assertEqual(first_email, self.fallback_payment_email())
-        self.assertEqual(first_email, second_email)
+        self.assertEqual(first_response.get_json()["transaction_id"], second_response.get_json()["transaction_id"])
 
     def test_initiate_payment_ignores_placeholder_email(self):
         headers = self.auth_headers()
@@ -520,7 +530,7 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         )
         self.assertEqual(self.booking_row(booking["id"])["booking_status"], "confirmed")
 
-    def test_reinitiate_payment_reuses_pending_row_and_follows_new_reference(self):
+    def test_reinitiate_payment_reuses_checkout_and_reference(self):
         headers, booking, first_payment = self.initiate_pending_payment()
 
         response, _ = self.initiate_payment(
@@ -531,7 +541,7 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         self.assertEqual(response.status_code, 200)
         second_payment = response.get_json()["payment"]
         self.assertEqual(second_payment["id"], first_payment["id"])
-        self.assertNotEqual(
+        self.assertEqual(
             second_payment["provider_reference"], first_payment["provider_reference"]
         )
         self.assertEqual(self.payments_count(booking["id"]), 1)
@@ -562,9 +572,9 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
 
         self.assertEqual(response.status_code, 200)
         new_payment = response.get_json()["payment"]
-        self.assertEqual(new_payment["id"], payment["id"])
+        self.assertNotEqual(new_payment["id"], payment["id"])
         self.assertEqual(new_payment["status"], "pending")
-        self.assertEqual(self.payments_count(booking["id"]), 1)
+        self.assertEqual(self.payments_count(booking["id"]), 2)
 
     def test_late_event_does_not_touch_cancelled_booking(self):
         for provider_status in ("success", "failed"):
@@ -584,7 +594,7 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
                 self.assertEqual(response.status_code, 200)
                 # Le paiement est solde mais le booking annule reste annule
                 expected_payment_status = (
-                    "success" if provider_status == "success" else "failed"
+                    "refund_required" if provider_status == "success" else "failed"
                 )
                 self.assertEqual(
                     self.payment_status_from_api(headers, booking["id"])["status"],
@@ -592,7 +602,7 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
                 )
                 booking_row = self.booking_row(booking["id"])
                 self.assertEqual(booking_row["booking_status"], "cancelled")
-                self.assertEqual(booking_row["payment_status"], "pending")
+                self.assertEqual(booking_row["payment_status"], "paid" if provider_status == "success" else "pending")
 
     def test_webhook_then_callback_is_idempotent(self):
         headers, booking, payment = self.initiate_pending_payment()
@@ -931,7 +941,7 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         )
         self.assertEqual(self.booking_row(booking["id"])["booking_status"], "confirmed")
 
-    def test_reinitiate_jeko_payment_generates_new_reference(self):
+    def test_reinitiate_jeko_payment_reuses_pending_reference(self):
         headers, booking, first_payment = self.initiate_jeko_pending_payment()
 
         response, _ = self.initiate_jeko_payment(
@@ -942,7 +952,7 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         self.assertEqual(response.status_code, 200)
         second_payment = response.get_json()["payment"]
         self.assertEqual(second_payment["id"], first_payment["id"])
-        self.assertNotEqual(
+        self.assertEqual(
             second_payment["provider_reference"], first_payment["provider_reference"]
         )
         self.assertEqual(self.payments_count(booking["id"]), 1)
@@ -1248,6 +1258,171 @@ class BookingPaymentRoutesTest(BackendApiTestCase):
         response = self.post_jeko_webhook(data)
 
         self.assertEqual(response.status_code, 200)
+
+    def audit_update(self, sql, **params):
+        from models.public import db
+        with self.app.app_context():
+            db.session.execute(db.text(sql), params)
+            db.session.commit()
+
+    def test_audit_past_trip_cannot_be_searched_or_booked(self):
+        trip_id = self.first_trip_id()
+        pickup, dropoff = self.trip_stop_ids(trip_id)
+        try:
+            self.audit_update("update public.trips set planned_start_datetime = now() - interval '1 day' where id = cast(:id as uuid)", id=trip_id)
+            trips_ids = [t['id'] for t in self.client.get('/api/trips').get_json()['trips']]
+            self.assertNotIn(trip_id, trips_ids)
+            response = self.client.post('/api/bookings', headers=self.auth_headers(), json={
+                'trip_id': trip_id, 'number_of_seats': 1, 'pickup_stop_id': pickup, 'dropoff_stop_id': dropoff})
+            self.assertEqual(response.status_code, 400)
+        finally:
+            self.audit_update("update public.trips set planned_start_datetime = now() + interval '1 day' where id = cast(:id as uuid)", id=trip_id)
+
+    def test_audit_expiry_releases_capacity_and_prevents_provider_call(self):
+        trip_id = self.first_trip_id()
+        trip_before = self.client.get('/api/trips/' + trip_id).get_json()['trip']
+        initial_booked = trip_before['capacity_booked']
+        booking, request_headers = self.create_booking()
+        headers = {"Authorization": request_headers["Authorization"]}
+        self.audit_update("update public.bookings set expires_at = now() - interval '1 second' where id = cast(:id as uuid)", id=booking['id'])
+        with patch('routes.payment.PaystackService.initialize_payment') as provider:
+            response = self.client.post('/api/payments/initiate', headers=headers, json={'booking_id': booking['id']})
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.get_json()['code'], 'BOOKING_EXPIRED')
+            provider.assert_not_called()
+        self.assertEqual(self.booking_row(booking['id'])['booking_status'], 'expired')
+        trip = self.client.get('/api/trips/' + booking['trip_id']).get_json()['trip']
+        self.assertEqual(trip['capacity_booked'], initial_booked)
+        row = self.client.get('/api/bookings/' + booking['id'], headers=headers).get_json()['booking']
+        self.assertFalse(row['can_pay'])
+        self.assertIsNone(row['qr_payload'])
+
+    def test_audit_sales_deadline_prevents_payment(self):
+        booking, request_headers = self.create_booking()
+        headers = {"Authorization": request_headers["Authorization"]}
+        self.audit_update("update public.trips set booking_close_at = now() - interval '1 second' where id = cast(:id as uuid)", id=booking['trip_id'])
+        response = self.client.post('/api/payments/initiate', headers=headers, json={'booking_id': booking['id']})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.booking_row(booking['id'])['booking_status'], 'expired')
+        self.audit_update("update public.trips set booking_close_at = null where id = cast(:id as uuid)", id=booking['trip_id'])
+
+    def test_audit_legacy_hold_without_expiry_is_released(self):
+        booking, request_headers = self.create_booking()
+        headers = {"Authorization": request_headers["Authorization"]}
+        self.audit_update("update public.bookings set expires_at = null, created_at = now() - interval '1 hour' where id = cast(:id as uuid)", id=booking['id'])
+        response = self.client.get('/api/bookings', headers=headers)
+        row = next(b for b in response.get_json()['bookings'] if b['id'] == booking['id'])
+        self.assertEqual(row['status'], 'expired')
+        self.assertEqual(row['journey_status'], 'expired')
+
+    def test_audit_late_success_is_reconciled_without_confirmation(self):
+        headers, booking, payment = self.initiate_pending_payment()
+        self.audit_update("update public.bookings set expires_at = now() - interval '1 second' where id = cast(:id as uuid)", id=booking['id'])
+        data = self.paystack_transaction_data(payment)
+        for _ in range(2):
+            self.assertEqual(self.post_payment_webhook(data).status_code, 200)
+        row = self.booking_row(booking['id'])
+        self.assertEqual(row['booking_status'], 'expired')
+        self.assertEqual(row['payment_status'], 'paid')
+        self.assertEqual(self.payment_status_from_api(headers, booking['id'])['status'], 'refund_required')
+
+    def test_audit_scan_requires_operator_and_consumes_once(self):
+        headers, booking, payment = self.initiate_pending_payment()
+        self.post_payment_webhook(self.paystack_transaction_data(payment))
+        try:
+            self.audit_update("update public.trips set planned_start_datetime = now() + interval '10 minutes', planned_end_datetime = now() + interval '2 hours' where id = cast(:id as uuid)", id=booking['trip_id'])
+            url = '/api/bookings/ticket/' + booking['ticket_reference'] + '/consume'
+            payload = {'trip_id': booking['trip_id']}
+            self.assertEqual(self.client.post(url, json=payload).status_code, 401)
+            self.assertEqual(self.client.post(url, headers=headers, json=payload).status_code, 403)
+            self.app.config['TICKET_SCANNER_CUSTOMER_IDS'] = (TEST_CUSTOMER_ID,)
+            try:
+                wrong_trip = self.client.post(url, headers=headers, json={'trip_id': str(uuid4())})
+                self.assertEqual(wrong_trip.status_code, 409)
+                first = self.client.post(url, headers=headers, json=payload)
+                self.assertEqual(first.status_code, 200)
+                self.assertEqual(first.get_json()['booking']['journey_status'], 'boarded')
+                second = self.client.post(url, headers=headers, json=payload)
+                self.assertEqual(second.status_code, 409)
+                self.assertEqual(second.get_json()['code'], 'TICKET_ALREADY_USED')
+            finally:
+                self.app.config['TICKET_SCANNER_CUSTOMER_IDS'] = ()
+        finally:
+            self.audit_update("update public.trips set planned_start_datetime = now() + interval '1 day', planned_end_datetime = now() + interval '1 day' + interval '3 hours' where id = cast(:id as uuid)", id=booking['trip_id'])
+
+    def test_audit_completed_journey_has_no_active_actions(self):
+        headers, booking, payment = self.initiate_pending_payment()
+        self.post_payment_webhook(self.paystack_transaction_data(payment))
+        try:
+            self.audit_update("update public.trips set planned_start_datetime = now() - interval '2 hours', planned_end_datetime = now() - interval '1 hour' where id = cast(:id as uuid)", id=booking['trip_id'])
+            row = self.client.get('/api/bookings/' + booking['id'], headers=headers).get_json()['booking']
+            self.assertEqual(row['journey_status'], 'no_show')
+            for key in ('can_pay', 'can_cancel', 'can_show_ticket', 'can_board'):
+                self.assertFalse(row[key])
+            self.assertIsNone(row['qr_payload'])
+        finally:
+            self.audit_update("update public.trips set planned_start_datetime = now() + interval '1 day', planned_end_datetime = now() + interval '1 day' + interval '3 hours' where id = cast(:id as uuid)", id=booking['trip_id'])
+
+    def test_audit_last_seat_cannot_be_booked_twice_concurrently(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        trip_id = self.first_trip_id()
+        pickup, dropoff = self.trip_stop_ids(trip_id)
+        headers = self.auth_headers()
+        with self.app.app_context():
+            from models.public import db
+            booked = db.session.execute(
+                db.text("select coalesce(capacity_booked, 0) from public.trips where id = cast(:id as uuid)"),
+                {"id": trip_id},
+            ).scalar() or 0
+        self.audit_update("update public.trips set capacity_total = :cap where id = cast(:id as uuid)", id=trip_id, cap=booked + 1)
+        barrier = Barrier(2)
+        def reserve():
+            with self.app.test_client() as client:
+                barrier.wait(timeout=10)
+                return client.post('/api/bookings', headers=headers, json={
+                    'trip_id': trip_id, 'number_of_seats': 1,
+                    'pickup_stop_id': pickup, 'dropoff_stop_id': dropoff}).status_code
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                statuses = list(executor.map(lambda _: reserve(), range(2)))
+            self.assertEqual(sorted(statuses), [201, 400])
+        finally:
+            self.audit_update("update public.trips set capacity_total = 13 where id = cast(:id as uuid)", id=trip_id)
+
+    def test_audit_expiration_cli_is_idempotent(self):
+        booking, _ = self.create_booking()
+        self.audit_update("update public.bookings set expires_at = now() - interval '1 second' where id = cast(:id as uuid)", id=booking['id'])
+        runner = self.app.test_cli_runner()
+        first = runner.invoke(args=['expire-bookings'])
+        self.assertEqual(first.exit_code, 0)
+        self.assertIn('Expired 1 booking(s)', first.output)
+        second = runner.invoke(args=['expire-bookings'])
+        self.assertIn('Expired 0 booking(s)', second.output)
+
+    def test_audit_retry_retains_old_reference_and_detects_double_collection(self):
+        headers, booking, old = self.initiate_pending_payment()
+        self.post_payment_webhook(self.paystack_transaction_data(old, status='failed'), event='charge.failed')
+        response, _ = self.initiate_payment(headers, {'booking_id': booking['id']})
+        new = response.get_json()['payment']
+        self.assertNotEqual(old['provider_reference'], new['provider_reference'])
+        self.post_payment_webhook(self.paystack_transaction_data(old))
+        self.post_payment_webhook(self.paystack_transaction_data(new))
+        from infrastructure.supabase_write_repositories import SupabasePaymentRepository
+        with self.app.app_context():
+            repository = SupabasePaymentRepository()
+            self.assertEqual(repository.get_by_reference(old['provider_reference'])['status'], 'success')
+            self.assertEqual(repository.get_by_reference(new['provider_reference'])['status'], 'refund_required')
+        self.assertEqual(self.booking_row(booking['id'])['booking_status'], 'confirmed')
+        self.assertEqual(self.payment_status_from_api(headers, booking['id'])['status'], 'success')
+        self.assertEqual(self.payments_count(booking['id']), 2)
+
+    def test_audit_hold_never_outlives_departure_even_with_later_sales_close(self):
+        trip_id = self.first_trip_id()
+        self.audit_update("update public.trips set planned_start_datetime = now() + interval '5 minutes', booking_close_at = now() + interval '1 hour' where id = cast(:id as uuid)", id=trip_id)
+        booking, _ = self.create_booking()
+        from datetime import datetime
+        self.assertLessEqual(datetime.fromisoformat(booking['expires_at']), datetime.fromisoformat(booking['trip']['departure_time']))
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ create type line_status as enum ('draft', 'active', 'inactive');
 create type stop_status as enum ('active', 'inactive');
 create type trip_status as enum ('scheduled', 'boarding', 'departed', 'completed', 'cancelled');
 create type payment_status as enum ('pending', 'paid', 'failed', 'refunded');
-create type booking_status as enum ('pending', 'confirmed', 'cancelled', 'boarded', 'no_show', 'completed');
+create type booking_status as enum ('pending', 'confirmed', 'cancelled', 'boarded', 'no_show', 'completed', 'expired');
 create type booking_channel as enum ('whatsapp', 'admin', 'app', 'agent');
 
 create table partners (
@@ -158,6 +158,7 @@ create table trips (
     departure_time time not null,
     planned_start_datetime timestamptz not null,
     planned_end_datetime timestamptz,
+    booking_close_at timestamptz,
     status trip_status not null default 'scheduled',
     capacity_total integer not null check (capacity_total >= 1),
     capacity_blocked integer not null default 0 check (capacity_blocked >= 0),

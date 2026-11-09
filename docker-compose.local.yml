@@ -39,6 +39,11 @@ services:
       - BREVO_API_KEY=
       - BREVO_SENDER_NAME=Jelani
       - BREVO_SENDER_EMAIL=noreply@jelani.tech
+      - WALLET_ENABLED=true
+      - WALLET_TOPUP_ENABLED=true
+      - WALLET_PAYMENT_ENABLED=true
+      - WALLET_REFUND_TO_WALLET=true
+      - TICKET_SCANNER_CUSTOMER_IDS=88888888-8888-8888-8888-888888888883
     depends_on:
       postgres:
         condition: service_healthy

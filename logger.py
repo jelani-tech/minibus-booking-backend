@@ -42,3 +42,11 @@ def setup_logging(logtail_token: str | None = None, log_level: str = "INFO"):
         logtail_handler.setLevel(log_level)
         logger.add(_logtail_sink(logtail_handler), level=log_level, format="{message}")
         logger.info("Better Stack activé")
+
+def mask_phone(phone: str) -> str:
+    """Masks a phone number for logging (keeps only the last 4 digits)."""
+    if not phone:
+        return "<vide>"
+    if len(phone) <= 4:
+        return "*" * len(phone)
+    return f"{'*' * (len(phone) - 4)}{phone[-4:]}"
